@@ -6,16 +6,18 @@ import { getProactiveMode, type ProactiveMode } from '../db/users.js';
 import { getCluster, setClusterMatured } from '../db/clusters.js';
 import { findOlderSiblingInCluster } from '../db/items.js';
 import { logSurfacing, wasItemSurfacedRecently } from '../db/surfacing.js';
+import { tuning } from '../config/tuning.js';
 
 /**
- * Пороги проактивного всплытия (режим 2). Подбираются эмпирически на своём корпусе (§12).
+ * Пороги проактивного всплытия (режим 2). Подбираются эмпирически на своём корпусе (§12),
+ * настраиваются через RESONANCE_MIN_AGE_DAYS / RESONANCE_SURFACE_COOLDOWN_DAYS / MATURITY_THRESHOLD в .env.
  */
 /** Резонанс показываем только если «старому соседу» уже хотя бы столько дней. */
-const RESONANCE_MIN_AGE_DAYS = 10;
+const RESONANCE_MIN_AGE_DAYS = tuning.resonanceMinAgeDays;
 /** Не показывать один и тот же старый item проактивно чаще, чем раз в столько дней. */
-const RESONANCE_SURFACE_COOLDOWN_DAYS = 30;
+const RESONANCE_SURFACE_COOLDOWN_DAYS = tuning.resonanceSurfaceCooldownDays;
 /** На каком размере кластера шлём «тема созрела» (один раз). */
-export const MATURITY_THRESHOLD = 5;
+export const MATURITY_THRESHOLD = tuning.maturityThreshold;
 
 export type Trigger = 'maturity' | 'resonance';
 

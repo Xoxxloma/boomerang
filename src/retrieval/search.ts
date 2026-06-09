@@ -5,6 +5,7 @@ import { embed } from '../ai/embeddings.js';
 import { listClusters } from '../db/clusters.js';
 import { matchClustersByName } from './clusterMatch.js';
 import type { ItemType } from './parseQuery.js';
+import { tuning } from '../config/tuning.js';
 
 export interface SearchHit {
   item: Item;
@@ -47,9 +48,9 @@ export async function search(
   opts: SearchOptions = {},
 ): Promise<SearchHit[]> {
   const limit = opts.limit ?? 8;
-  // Порог похожести (§12). Низкий: text-embedding-3-small даёт малые косинусы на русском,
-  // 0.28 резал релевантное. Шум отсекаем порядком (desc) + лимитом, а не высоким порогом.
-  const minSimilarity = opts.minSimilarity ?? 0.15;
+  // Порог похожести (§12, настраивается через SEARCH_MIN_SIMILARITY). Низкий: text-embedding-3-small
+  // даёт малые косинусы на русском, 0.28 резал релевантное. Шум отсекаем порядком (desc) + лимитом.
+  const minSimilarity = opts.minSimilarity ?? tuning.searchMinSimilarity;
   // Сколько слотов в выдаче ГАРАНТИРУЕМ под recall по имени категории (§4). Без квоты их топит
   // сортировка по косинусу: «растворённая» тема (кот в политическом посте) имеет низкий косинус и
   // вылетает при slice. Резерв заставляет её всплыть, потеснив наименее релевантную семантику.

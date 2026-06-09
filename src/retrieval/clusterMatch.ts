@@ -1,4 +1,5 @@
 import type { Cluster } from '../db/schema.js';
+import { tuning } from '../config/tuning.js';
 
 /**
  * Нечёткое сопоставление запроса с названиями категорий (гибридный поиск, §6 + §4).
@@ -41,7 +42,7 @@ export function wordSimilarity(a: string, b: string): number {
 export function matchClustersByName(
   clusters: Cluster[],
   query: string,
-  threshold = 0.45,
+  threshold = tuning.clusterNameMatchThreshold,
 ): Cluster[] {
   const qWords = norm(query).split(' ').filter((w) => w.length >= 3);
   if (qWords.length === 0) return [];

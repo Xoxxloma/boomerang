@@ -8,6 +8,7 @@ import {
   updateCentroid,
 } from '../db/clusters.js';
 import { cosineSimilarity, updatedCentroid } from './math.js';
+import { tuning } from '../config/tuning.js';
 
 /** Единая полка «Изображения» (§3.4): картинки не дробим на подкатегории. */
 export const IMAGE_SHELF = 'Изображения';
@@ -39,9 +40,9 @@ export async function assignToShelf(
 
 /**
  * Порог близости к ближайшему кластеру. Ниже — заводим новый кластер-кандидат.
- * Подбирается эмпирически на своём корпусе (открытый вопрос §12).
+ * Подбирается эмпирически на своём корпусе (§12), настраивается через CLUSTER_THRESHOLD в .env.
  */
-export const NEW_CLUSTER_THRESHOLD = 0.45;
+export const NEW_CLUSTER_THRESHOLD = tuning.clusterThreshold;
 
 /**
  * Результат отнесения к кластеру. isNew — завели новый кластер; size — размер кластера ПОСЛЕ
