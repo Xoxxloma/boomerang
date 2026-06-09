@@ -1,0 +1,151 @@
+import { InlineKeyboard, Keyboard, type Bot, type Context } from 'grammy';
+import { search, listByFilter } from '../../retrieval/search.js';
+import { parseQuery } from '../../retrieval/parseQuery.js';
+import { synthesize, extractCitedIndices, sourceName } from '../../retrieval/synthesize.js';
+import type { Item } from '../../db/schema.js';
+
+/** Текст приглашения к поиску — по нему же ловим ответ (эту строку шлёт только бот). */
+const SEARCH_PROMPT = '🔍 Что ищем? Напиши запрос ответом на это сообщение.';
+/** Подпись постоянной кнопки поиска (reply-клавиатура). */
+const SEARCH_BUTTON = '🔍 Найти';
+/** Постоянная клавиатура с кнопкой поиска — ставится на /start. */
+export const searchReplyKeyboard = new Keyboard().text(SEARCH_BUTTON).resized().persistent();
+
+/** Приглашение ввести запрос: force_reply фокусирует поле ответа — пользователь сразу печатает. */
+async function promptSearch(ctx: Context): Promise<void> {
+  await ctx.reply(SEARCH_PROMPT, {
+    reply_markup: { force_reply: true, input_field_placeholder: 'Например: ипотека и ставки' },
+  });
+}
+
+/** Нумерованный список записей + кнопка-карточка на каждую (метаданные-режим, без синтеза). */
+async function replyWithList(ctx: Context, list: Item[], query: string): Promise<void> {
+  const lines = list.map(
+    (it, i) => `${i + 1}. ${sourceName(it)}${it.url ? ` — ${it.url}` : ''}`,
+  );
+  const keyboard = new InlineKeyboard();
+  list.forEach((it, i) => keyboard.text(`${i + 1} · ${sourceName(it)}`, `card:${it.id}`).row());
+  await ctx.reply(`Вот что нашёл по «${query}»:\n${lines.join('\n')}`, {
+    link_preview_options: { is_disabled: true },
+    reply_markup: keyboard,
+  });
+}
+
+async function handleQuery(ctx: Context, query: string): Promise<void> {
+  await ctx.replyWithChatAction('typing').catch(() => {});
+  const userId = ctx.from?.id;
+  if (!userId) return;
+
+  // Разбор запроса: фильтры (тип/время) + синонимы + категории. Сам fail-safe, но подстрахуемся.
+  let parsed;
+  try {
+    parsed = await parseQuery(userId, query);
+  } catch {
+    parsed = { query, types: [], sinceDays: null, expansions: [], clusterIds: [] };
+  }
+  const hasFilter = parsed.types.length > 0 || parsed.sinceDays !== null;
+
+  // Метаданные-режим: фильтр есть, смысловой темы нет («документы за две недели») →
+  // список по свежести, без LLM-синтеза (нечего связывать в ответ).
+  if (hasFilter && !parsed.query) {
+    let list: Item[];
+    try {
+      list = await listByFilter(userId, { types: parsed.types, sinceDays: parsed.sinceDays });
+    } catch (err) {
+      console.error('listByFilter error:', err);
+      await ctx.reply('Поиск сейчас недоступен — попробуй ещё раз через минуту.');
+      return;
+    }
+    if (list.length === 0) {
+      await ctx.reply(
+        `Пока ничего не нашёл по «${query}». Перешли что-нибудь по этой теме — и спроси снова.`,
+      );
+      return;
+    }
+    await replyWithList(ctx, list, query);
+    return;
+  }
+
+  let hits;
+  try {
+    hits = await search(userId, parsed.query || query, {
+      types: parsed.types,
+      sinceDays: parsed.sinceDays,
+      expansions: parsed.expansions,
+      clusterIds: parsed.clusterIds,
+    });
+  } catch (err) {
+    // Эмбеддинг/БД отвалились (напр. OpenAI через VPN) — поиск это главный сценарий, нельзя молчать.
+    console.error('search error:', err);
+    await ctx.reply('Поиск сейчас недоступен — попробуй ещё раз через минуту.');
+    return;
+  }
+
+  if (hits.length === 0) {
+    await ctx.reply(
+      `Пока ничего не нашёл по «${query}». Перешли что-нибудь по этой теме — и спроси снова.`,
+    );
+    return;
+  }
+
+  let answer: string;
+  let sources;
+  try {
+    ({ answer, sources } = await synthesize(query, hits));
+  } catch (err) {
+    // Синтез (LLM) упал — нашли, но не свели. Покажем хотя бы источники, а не пустоту.
+    console.error('synthesize error:', err);
+    const list = hits
+      .slice(0, 8)
+      .map((h, i) => `${i + 1}. ${sourceName(h.item)}${h.item.url ? ` — ${h.item.url}` : ''}`)
+      .join('\n');
+    await ctx.reply(`Свести в ответ не вышло, но вот что нашёл по «${query}»:\n${list}`, {
+      link_preview_options: { is_disabled: true },
+    });
+    return;
+  }
+
+  // Кнопки извлекаем из УЖЕ обрезанного текста (Telegram-лимит 4096): иначе появились бы кнопки
+  // источников, цитаты которых отрезаны и пользователю не видны.
+  const shown = answer.slice(0, 4096);
+  // Показываем кнопки ТОЛЬКО реально процитированных источников.
+  // Один пункт на источник во всю ширину; тап открывает карточку (переход/удаление).
+  const cited = extractCitedIndices(shown, sources.length);
+  let keyboard: InlineKeyboard | undefined;
+  if (cited.length > 0) {
+    keyboard = new InlineKeyboard();
+    for (const n of cited) {
+      const it = sources[n - 1]!;
+      keyboard.text(`${n} · ${sourceName(it)}`, `card:${it.id}`).row();
+    }
+  }
+
+  await ctx.reply(shown, {
+    link_preview_options: { is_disabled: true },
+    ...(keyboard ? { reply_markup: keyboard } : {}),
+  });
+}
+
+export function registerSearch(bot: Bot): void {
+  // Поиск ТОЛЬКО по явной команде /find <запрос> или кнопке — прозрачно, без угадывания.
+  // Любой обычный текст уходит в ingest (сохраняется как контент).
+  bot.command('find', async (ctx) => {
+    const query = ctx.match.trim();
+    if (!query) {
+      await promptSearch(ctx); // голый /find → приглашение с фокусом на ввод
+      return;
+    }
+    await handleQuery(ctx, query);
+  });
+
+  // Тап по постоянной кнопке «🔍 Найти» → то же приглашение.
+  bot.hears(SEARCH_BUTTON, promptSearch);
+
+  // Перехват ответа на приглашение поиска (ДО ingest): этот текст — запрос, не контент.
+  bot.on('message:text', async (ctx, next) => {
+    if (ctx.message.reply_to_message?.text !== SEARCH_PROMPT) return next();
+    const query = ctx.message.text.trim();
+    if (!query || query.startsWith('/')) return next();
+    await handleQuery(ctx, query);
+  });
+}

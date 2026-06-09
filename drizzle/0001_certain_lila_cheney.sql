@@ -1,0 +1,1 @@
+ALTER TABLE "items" ADD COLUMN "tg_message_id" bigint;

@@ -1,0 +1,21 @@
+services:
+  db:
+    image: pgvector/pgvector:pg17
+    container_name: boomerang-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: boomerang
+      POSTGRES_PASSWORD: boomerang
+      POSTGRES_DB: boomerang
+    ports:
+      - "5433:5432"
+    volumes:
+      - boomerang_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U boomerang -d boomerang"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  boomerang_pgdata:

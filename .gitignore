@@ -1,0 +1,14 @@
+node_modules/
+dist/
+.env
+.env.local
+data/
+.bot.pid
+*.log
+.DS_Store
+
+# OCR-модели tesseract.js (авто-скачиваются/кэшируются в CWD, не храним в репо)
+*.traineddata
+
+# Кэш инструментов
+.fallow/

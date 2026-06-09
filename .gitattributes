@@ -1,0 +1,6 @@
+# Нормализуем переводы строк: в репо всегда LF (прод — Linux VPS, дев — Windows).
+* text=auto eol=lf
+
+# Бинарники — не трогать.
+*.traineddata binary
+*.bin binary
