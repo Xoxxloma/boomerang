@@ -1,4 +1,4 @@
-import { and, cosineDistance, desc, eq, isNotNull, ne, sql } from 'drizzle-orm';
+import { and, cosineDistance, desc, eq, isNotNull, isNull, ne, sql } from 'drizzle-orm';
 import { db } from './client.js';
 import { items, type Item, type NewItem } from './schema.js';
 
@@ -118,6 +118,24 @@ export async function setEmbedding(id: string, embedding: number[]): Promise<voi
     .update(items)
     .set({ embedding, indexedAt: sql`now()` })
     .where(eq(items.id, id));
+}
+
+/**
+ * Пометить L2 завершённым БЕЗ эмбеддинга — для записей без индексируемого текста (фото без OCR-текста,
+ * видео без подписи): они обработаны, просто индексировать нечего. Иначе `indexed_at IS NULL` навсегда
+ * путало бы их с реальным сбоем. Ставим только если ещё не проставлено (идемпотентно).
+ */
+export async function markIndexed(id: string): Promise<void> {
+  await db
+    .update(items)
+    .set({ indexedAt: sql`now()` })
+    .where(and(eq(items.id, id), isNull(items.indexedAt)));
+}
+
+/** Короткое имя записи для сообщений (заголовок → начало текста → url). */
+export function itemDisplayName(item: Item): string {
+  const name = item.title?.trim() || item.rawText?.trim().slice(0, 60) || item.url || 'запись';
+  return name;
 }
 
 /** Сырой OCR-текст — только в индекс (§3.4), пользователю не показываем. */

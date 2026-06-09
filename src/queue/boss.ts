@@ -5,6 +5,8 @@ import { env } from '../config/env.js';
 export const Q_PROCESS = 'l2-process';
 export const Q_FLUSH_ALBUM = 'l2-flush-album';
 export const Q_BURST_FLUSH = 'l2-burst-flush';
+/** Dead-letter для l2-process: сюда pg-boss копирует задачу, исчерпавшую ретраи (реальный сбой). */
+export const Q_PROCESS_DLQ = 'l2-process-dlq';
 
 let boss: PgBoss | null = null;
 
@@ -21,6 +23,8 @@ export function getBoss(): PgBoss {
 export async function startBoss(): Promise<PgBoss> {
   const b = getBoss();
   await b.start();
+  // DLQ создаём до Q_PROCESS — на него ссылается deadLetter в enqueueProcess.
+  await b.createQueue(Q_PROCESS_DLQ);
   await b.createQueue(Q_PROCESS);
   await b.createQueue(Q_FLUSH_ALBUM);
   await b.createQueue(Q_BURST_FLUSH);

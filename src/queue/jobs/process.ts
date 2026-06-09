@@ -1,5 +1,5 @@
 import { embed } from '../../ai/embeddings.js';
-import { getItem, setEmbedding, setOcrText, setRawText } from '../../db/items.js';
+import { getItem, setEmbedding, setOcrText, setRawText, markIndexed } from '../../db/items.js';
 import { buildIndexText } from '../../ingest/extract.js';
 import { assignCluster, assignToShelf, IMAGE_SHELF } from '../../cluster/assign.js';
 import { maybeSurface } from '../../retrieval/proactive.js';
@@ -67,4 +67,8 @@ export async function processItem(itemId: string, seedCategory: string): Promise
       }
     }
   }
+
+  // Индексировать было нечего (нет текста на эмбеддинг) — но обработка прошла. Помечаем как
+  // обработанное, чтобы такие записи не висели «застрявшими» наравне с реальными сбоями (см. findStuckItems).
+  if (!emb) await markIndexed(itemId);
 }

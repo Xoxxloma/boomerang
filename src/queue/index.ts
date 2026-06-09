@@ -1,8 +1,18 @@
-import { getBoss, Q_PROCESS, Q_FLUSH_ALBUM, Q_BURST_FLUSH } from './boss.js';
+import { getBoss, Q_PROCESS, Q_FLUSH_ALBUM, Q_BURST_FLUSH, Q_PROCESS_DLQ } from './boss.js';
+
+/** Координаты сообщения-квитанции поста (в личке chatId === userId) — чтобы L2 мог его править. */
+export interface AckRef {
+  chatId: number;
+  messageId: number;
+}
 
 export interface ProcessJob {
   itemId: string;
   seedCategory: string;
+  /** Сообщение «✅ Положил…» этого поста — правим его при сбое/успехе (есть только у одиночных пересылок). */
+  ack?: AckRef;
+  /** Повторная обработка по кнопке — при УСПЕХЕ обновить сообщение на «доиндексировал». */
+  notifyOnSuccess?: boolean;
 }
 
 export interface FlushAlbumJob {
@@ -24,11 +34,18 @@ const BURST_DEBOUNCE_SEC = 1800;
  * Поставить L2-обработку item в фон (эмбеддинг/OCR/чтение док/кластер).
  * singletonKey=itemId дедупит повторные постановки одного item.
  */
-export async function enqueueProcess(itemId: string, seedCategory: string): Promise<void> {
+export async function enqueueProcess(
+  itemId: string,
+  seedCategory: string,
+  ack?: AckRef,
+  notifyOnSuccess = false,
+): Promise<void> {
   await getBoss().send(
     Q_PROCESS,
-    { itemId, seedCategory } satisfies ProcessJob,
-    { singletonKey: itemId, retryLimit: 3, retryDelay: 30 },
+    { itemId, seedCategory, ack, notifyOnSuccess } satisfies ProcessJob,
+    // deadLetter: исчерпав ретраи, задача копируется в Q_PROCESS_DLQ → оттуда правим сообщение поста.
+    // retryDelay 8с: даём временному сбою (rate-limit/сеть) шанс, но не тянем — сбой всплывёт за ~25с.
+    { singletonKey: itemId, retryLimit: 3, retryDelay: 8, deadLetter: Q_PROCESS_DLQ },
   );
 }
 

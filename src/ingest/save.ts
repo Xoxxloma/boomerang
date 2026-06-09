@@ -4,7 +4,7 @@ import { detect, hasMeaningfulCaption } from './detect.js';
 import { classify } from './classify.js';
 import { fetchLinkMeta } from '../content/og.js';
 import { insertItem, findItemByTgMessageId } from '../db/items.js';
-import { enqueueProcess } from '../queue/index.js';
+import { enqueueProcess, type AckRef } from '../queue/index.js';
 import { IMAGE_SHELF } from '../cluster/assign.js';
 import { fixKeyboard } from '../bot/handlers/callbacks.js';
 import type { Item, NewItem } from '../db/schema.js';
@@ -14,7 +14,12 @@ import type { Item, NewItem } from '../db/schema.js';
  * постановка тяжёлого (L2) в фон. Возвращает item и категорию (для edit сообщения).
  * Без ctx — принимает Api напрямую, чтобы вызываться и из хендлера, и из фонового флаша альбома.
  */
-export async function saveItem(api: Api, userId: number, msg: Message): Promise<{ item: Item; category: string }> {
+export async function saveItem(
+  api: Api,
+  userId: number,
+  msg: Message,
+  ack?: AckRef,
+): Promise<{ item: Item; category: string }> {
   const det = detect(msg);
 
   let title: string | undefined;
@@ -56,7 +61,8 @@ export async function saveItem(api: Api, userId: number, msg: Message): Promise<
 
   // Картинки — единая полка (§3.4), без LLM-классификации. Остальное — по дешёвому сигналу.
   const category = det.type === 'image' ? IMAGE_SHELF : await classify(item);
-  await enqueueProcess(item.id, category);
+  // ack передаём только для одиночных пересылок — тогда L2 сможет отредактировать «Положил…» при сбое.
+  await enqueueProcess(item.id, category, ack);
   return { item, category };
 }
 

@@ -1,8 +1,10 @@
-import { getBoss, Q_PROCESS, Q_FLUSH_ALBUM, Q_BURST_FLUSH } from './boss.js';
+import { InlineKeyboard } from 'grammy';
+import { getBoss, Q_PROCESS, Q_FLUSH_ALBUM, Q_BURST_FLUSH, Q_PROCESS_DLQ } from './boss.js';
 import type { ProcessJob, FlushAlbumJob, BurstFlushJob } from './index.js';
 import { processItem } from './jobs/process.js';
 import { flushAlbum } from '../ingest/album.js';
 import { flushBurst } from '../import/burst.js';
+import { getItem, itemDisplayName } from '../db/items.js';
 import { getBotApi } from '../bot/api.js';
 
 /**
@@ -14,7 +16,45 @@ export async function startWorkers(): Promise<void> {
 
   await boss.work<ProcessJob>(Q_PROCESS, { batchSize: 1 }, async (jobs) => {
     for (const job of jobs) {
-      await processItem(job.data.itemId, job.data.seedCategory);
+      try {
+        await processItem(job.data.itemId, job.data.seedCategory);
+      } catch (err) {
+        // Логируем с itemId (глобальный хендлер pg-boss его не знает) и пробрасываем —
+        // pg-boss ретраит, а исчерпав ретраи, скопирует задачу в Q_PROCESS_DLQ.
+        console.error('process failed', { itemId: job.data.itemId, err });
+        throw err;
+      }
+      // Успех ПОВТОРНОЙ обработки (по кнопке) → честно обновляем сообщение поста: теперь найдётся.
+      const { ack, notifyOnSuccess, itemId } = job.data;
+      if (notifyOnSuccess && ack) {
+        const item = await getItem(itemId);
+        const name = item ? itemDisplayName(item) : 'запись';
+        await getBotApi()
+          .editMessageText(ack.chatId, ack.messageId, `✅ Доиндексировал «${name}» — теперь найду в поиске.`)
+          .catch(() => {});
+      }
+    }
+  });
+
+  // Dead-letter: задача l2-process исчерпала ретраи (реальный сбой, напр. embed-API).
+  // Правим САМО сообщение поста («✅ Положил…» → честный статус) + кнопка повтора. Без обезличенных
+  // уведомлений: ack есть только у одиночных пересылок (у альбома/заливки общий ack — пропускаем).
+  await boss.work<ProcessJob>(Q_PROCESS_DLQ, { batchSize: 1 }, async (jobs) => {
+    for (const job of jobs) {
+      const { itemId, seedCategory, ack } = job.data;
+      if (!ack) continue;
+      const item = await getItem(itemId);
+      if (!item) continue;
+      const kb = new InlineKeyboard().text('🔄 Повторить', `reidx:${itemId}`);
+      await getBotApi()
+        .editMessageText(
+          ack.chatId,
+          ack.messageId,
+          `⚠️ «${itemDisplayName(item)}» — сохранил в «${seedCategory}», но не смог проиндексировать. ` +
+            `В поиске пока не найду.`,
+          { reply_markup: kb },
+        )
+        .catch(() => {});
     }
   });
 

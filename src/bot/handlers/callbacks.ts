@@ -1,5 +1,8 @@
 import { GrammyError, InlineKeyboard, type Bot, type Context } from 'grammy';
-import { getItem, deleteItem } from '../../db/items.js';
+import { getItem, deleteItem, itemDisplayName } from '../../db/items.js';
+import { enqueueProcess } from '../../queue/index.js';
+import { IMAGE_SHELF } from '../../cluster/assign.js';
+import { classify } from '../../ingest/classify.js';
 import {
   assignItemCluster,
   createCluster,
@@ -171,6 +174,23 @@ export function registerCallbacks(bot: Bot): void {
     await setProactiveMode(ctx.from.id, 'off');
     await ctx.editMessageReplyMarkup({}).catch(() => {});
     await ctx.answerCallbackQuery({ text: 'Ок, не буду напоминать' });
+  });
+
+  // «Повторить» из сообщения о сбое индексации — перезапуск L2 для КОНКРЕТНОЙ записи (это сообщение).
+  // Категорию L1 не персистим → восстанавливаем классификацией (картинкам — полка). notifyOnSuccess:
+  // при успехе воркер обновит это же сообщение на «доиндексировал».
+  bot.callbackQuery(/^reidx:(.+)$/, async (ctx) => {
+    const itemId = ctx.match[1]!;
+    const item = await getItem(itemId);
+    if (!item || item.userId !== ctx.from.id) {
+      return ctx.answerCallbackQuery({ text: 'Запись не найдена', show_alert: true });
+    }
+    const msg = ctx.callbackQuery.message;
+    const ack = msg ? { chatId: msg.chat.id, messageId: msg.message_id } : undefined;
+    const seed = item.type === 'image' ? IMAGE_SHELF : await classify(item);
+    await enqueueProcess(itemId, seed, ack, true);
+    await ctx.editMessageText(`🔄 Повторяю «${itemDisplayName(item)}»…`).catch(() => {});
+    await ctx.answerCallbackQuery({ text: 'Повторяю…' });
   });
 
   // Переход к источнику: reply на исходное сообщение → по цитате лента скроллит к оригиналу

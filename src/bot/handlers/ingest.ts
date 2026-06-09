@@ -36,7 +36,9 @@ export function registerIngest(bot: Bot): void {
     });
 
     try {
-      const { item, category } = await saveItem(ctx.api, ctx.from.id, ctx.message);
+      // Координаты ack-сообщения → L2 сможет отредактировать его при сбое индексации (1.4).
+      const ackRef = { chatId: ack.chat.id, messageId: ack.message_id };
+      const { item, category } = await saveItem(ctx.api, ctx.from.id, ctx.message, ackRef);
       await ctx.api.editMessageText(ack.chat.id, ack.message_id, `✅ Положил в ${label(item.title, category)}`, {
         reply_markup: fixKeyboard(item.id),
       });
