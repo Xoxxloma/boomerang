@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { dedupeDrafts, isNoise } from '../src/import/batch.js';
+import { dedupeDrafts, isNoise, dropPostedStragglers } from '../src/import/batch.js';
 import type { Draft } from '../src/import/draft.js';
 
 function draft(p: Partial<Draft>): Draft {
@@ -12,6 +12,7 @@ function draft(p: Partial<Draft>): Draft {
     title: null,
     tgFileId: null,
     tgFileUniqueId: null,
+    mediaGroupId: null,
     ...p,
   };
 }
@@ -35,26 +36,63 @@ describe('isNoise', () => {
 });
 
 describe('dedupeDrafts', () => {
-  it('схлопывает дубли по url', () => {
+  it('схлопывает дубли по url, повтор уходит в dupes', () => {
     const out = dedupeDrafts([
       draft({ type: 'link', url: 'https://x.io/a', rawText: 'раз' }),
       draft({ type: 'link', url: 'https://x.io/a', rawText: 'два' }),
     ]);
-    expect(out).toHaveLength(1);
+    expect(out.kept).toHaveLength(1);
+    expect(out.dupes).toHaveLength(1);
   });
   it('схлопывает дубли по file_unique_id', () => {
     const out = dedupeDrafts([
       draft({ type: 'image', tgFileUniqueId: 'AQAD' }),
       draft({ type: 'image', tgFileUniqueId: 'AQAD' }),
     ]);
-    expect(out).toHaveLength(1);
+    expect(out.kept).toHaveLength(1);
+    expect(out.dupes).toHaveLength(1);
   });
-  it('схлопывает дубли по нормализованному тексту, выкидывает пустые', () => {
+  it('схлопывает дубли по нормализованному тексту, выкидывает пустые (не как дубли)', () => {
     const out = dedupeDrafts([
       draft({ rawText: 'Привет   мир' }),
       draft({ rawText: 'привет мир' }),
       draft({ rawText: null }),
     ]);
+    expect(out.kept).toHaveLength(1);
+    expect(out.dupes).toHaveLength(1); // только текстовый повтор; пустой — не дубль
+  });
+});
+
+describe('dropPostedStragglers', () => {
+  it('выкидывает image-осколок уже-постнутого альбома', () => {
+    const out = dropPostedStragglers(
+      [draft({ type: 'image', tgFileUniqueId: 'u1', mediaGroupId: 'g1' })],
+      new Set(['g1']),
+    );
+    expect(out).toHaveLength(0);
+  });
+
+  it('оставляет картинки альбома без подписи (gid не постнут)', () => {
+    const out = dropPostedStragglers(
+      [
+        draft({ type: 'image', tgFileUniqueId: 'u1', mediaGroupId: 'g2' }),
+        draft({ type: 'image', tgFileUniqueId: 'u2', mediaGroupId: 'g2' }),
+      ],
+      new Set(['g1']),
+    );
+    expect(out).toHaveLength(2);
+  });
+
+  it('не трогает не-image записи того же gid (повторно присланный пост-член)', () => {
+    const out = dropPostedStragglers(
+      [draft({ type: 'tg_post', rawText: 'подпись', mediaGroupId: 'g1' })],
+      new Set(['g1']),
+    );
+    expect(out).toHaveLength(1);
+  });
+
+  it('не трогает одиночные картинки без gid', () => {
+    const out = dropPostedStragglers([draft({ type: 'image', tgFileUniqueId: 'u1' })], new Set(['g1']));
     expect(out).toHaveLength(1);
   });
 });

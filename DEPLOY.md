@@ -17,39 +17,38 @@
 
 ## Первичная установка (один раз)
 
+Только одноразовая обвязка — `npm ci`, миграции и запуск делает `scripts/deploy.sh` (шаг 4),
+чтобы не дублировать команды.
+
 ```sh
 # 1. Владение папкой — деплой-пользователю
 sudo chown -R <user> /opt/boomerang
 cd /opt/boomerang
 
-# 2. Зависимости (детерминированно из lock-файла)
-npm ci
-
-# 3. Прод-окружение (НЕ в git). Скопируй структуру из .env.example и заполни:
+# 2. Прод-окружение (НЕ в git). Скопируй структуру из .env.example и заполни:
 #    BOT_TOKEN=<токен прод-бота>
 #    DATABASE_URL=<Neon direct endpoint>?sslmode=require
 #    DATABASE_SSL=true
 #    OPENAI_API_KEY=... (+ остальные ключи)
 nano .env.production
 
-# 4. Схема БД (идемпотентно: ставит расширение vector, создаёт таблицы/индексы/схему pgboss)
-npm run db:migrate:prod
-
-# 5. systemd-сервис
+# 3. systemd-сервис: ставим и включаем (enable без --now — запустит уже deploy.sh в шаге 4)
 sudo cp deploy/boomerang.service /etc/systemd/system/boomerang.service
 sudo nano /etc/systemd/system/boomerang.service   # подставить User / WorkingDirectory / путь к npm
 sudo systemctl daemon-reload
-sudo systemctl enable --now boomerang
+sudo systemctl enable boomerang
 
-# 6. Проверка
-systemctl status boomerang
+# 4. Установка зависимостей + миграции + первый запуск
+bash scripts/deploy.sh
+
+# 5. Проверка
 journalctl -u boomerang -f          # ждём строку «🪃 Boomerang запущен»
 ```
 
 ## Обновление (каждый релиз)
 
 1. Доставь новый код в `/opt/boomerang` (сам).
-2. `bash scripts/deploy.sh` — `npm ci` → миграции → рестарт сервиса.
+2. `bash scripts/deploy.sh` — единая последовательность: `npm ci` → миграции → рестарт сервиса.
 
 ## Операционные команды
 

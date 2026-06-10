@@ -4,6 +4,7 @@ import type { Message } from 'grammy/types';
 import { db } from '../db/client.js';
 import { albumPart, albumSession } from '../db/schema.js';
 import { enqueueAlbumFlush } from '../queue/index.js';
+import { groupsAlreadyPosted } from '../db/items.js';
 import { flushAlbumMessages } from './save.js';
 
 /**
@@ -25,13 +26,19 @@ export async function bufferAlbumPart(api: Api, msg: Message): Promise<void> {
   await db.insert(albumPart).values({ mediaGroupId: gid, message: msg });
 
   if (claimed.length > 0) {
-    const ack = await api.sendMessage(msg.chat.id, 'Принял ✅', {
-      reply_parameters: { message_id: msg.message_id },
-    });
-    await db
-      .update(albumSession)
-      .set({ ackChatId: ack.chat.id, ackMessageId: ack.message_id })
-      .where(eq(albumSession.mediaGroupId, gid));
+    // Опоздавший член уже-постнутого альбома (его собратья с подписью сохранены прошлым флашем) —
+    // не шлём второй «Принял ✅». Сессия остаётся без ack-меты → flushAlbum по ней тихо подчистит part.
+    const userId = msg.from?.id;
+    const alreadyPosted = userId != null && (await groupsAlreadyPosted(userId, [gid])).has(gid);
+    if (!alreadyPosted) {
+      const ack = await api.sendMessage(msg.chat.id, 'Принял ✅', {
+        reply_parameters: { message_id: msg.message_id },
+      });
+      await db
+        .update(albumSession)
+        .set({ ackChatId: ack.chat.id, ackMessageId: ack.message_id })
+        .where(eq(albumSession.mediaGroupId, gid));
+    }
   }
 
   await enqueueAlbumFlush(gid); // debounce: продлеваем окно на каждую часть

@@ -55,8 +55,12 @@ export async function handleExport(api: Api, msg: Message): Promise<boolean> {
 
   if (!looksLikeExport(json)) return false; // валидный JSON, но не экспорт Telegram → обычный приём
 
-  // С этого момента уверены, что это экспорт — можно слать прогресс.
-  const progress = await api.sendMessage(msg.chat.id, '🪃 Разбираю экспорт…').catch(() => null);
+  // С этого момента уверены, что это экспорт — можно слать прогресс. reply_parameters: это сообщение
+  // потом редактируется (прогресс/итог), а трансформер reply-клавиатуры пропускает прямые ответы на
+  // контент пользователя — без него сообщение осталось бы нередактируемым («message can't be edited»).
+  const progress = await api
+    .sendMessage(msg.chat.id, 'Разбираю экспорт…', { reply_parameters: { message_id: msg.message_id } })
+    .catch(() => null);
   const msgId = progress?.message_id ?? null;
   const pChatId = progress?.chat.id ?? null;
 

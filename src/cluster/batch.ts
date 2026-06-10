@@ -129,15 +129,3 @@ export function clusterEmbeddings(seeds: SeedCluster[], points: ClusterPoint[]):
   }
   return { toExisting, newGroups };
 }
-
-/** Смешать старый центроид (веса size) с добавленным (веса addCount). */
-export function blendCentroid(
-  oldCentroid: number[],
-  oldSize: number,
-  addCentroid: number[],
-  addCount: number,
-): number[] {
-  const total = oldSize + addCount;
-  if (total === 0) return oldCentroid;
-  return oldCentroid.map((x, i) => (x * oldSize + addCentroid[i]! * addCount) / total);
-}

@@ -16,23 +16,53 @@ export function makeProgress(api: Api, chatId: number | null, messageId: number 
     if (done < total && now - last < EDIT_THROTTLE_MS) return;
     last = now;
     await api
-      .editMessageText(chatId, messageId, `🪃 Обрабатываю избранное… ${done}/${total}`)
+      .editMessageText(chatId, messageId, `Обрабатываю избранное… ${done}/${total}`)
       .catch(() => {});
   };
 }
 
-/** Финальный текст после заливки: счётчики + приглашение к запросу (без визуальной карты — она позже). */
+/** Сколько имён дублей показываем в секции (остаток сворачиваем в «…и ещё N»). */
+const DUPE_SHOW = 5;
+
+/** Секция списка дублей: заголовок + до DUPE_SHOW имён буллетами + «…и ещё N» при остатке. */
+function dupeSection(header: string, sample: string[], count: number): string {
+  const shown = sample.slice(0, DUPE_SHOW).map((n) => `• ${n}`);
+  const rest = count - Math.min(DUPE_SHOW, sample.length);
+  if (rest > 0) shown.push(`…и ещё ${rest}`);
+  return [header, ...shown].join('\n');
+}
+
+/**
+ * Финальный текст после заливки: что разобрал + ПОНЯТНЫЕ списки дублей (что уже было в Бумеранге и
+ * что повторилось внутри заливки) + мелочь числом + приглашение к запросу. Plain-text (шлётся без
+ * parse_mode), буллеты безопасны.
+ */
 export function finalText(res: BatchResult): string {
-  if (res.saved === 0) {
-    return res.skipped > 0
-      ? `Похоже, всё это уже было сохранено или не несло текста (${res.skipped}). Ничего нового не добавил.`
-      : 'Не нашёл, что обработать. Перешли что-нибудь — и спроси.';
+  // Совсем нечего показать — ни сохранённого, ни пропущенного.
+  if (res.saved === 0 && res.skipped === 0) {
+    return 'Не нашёл, что обработать. Перешли что-нибудь — и спроси.';
   }
-  const skip = res.skipped > 0 ? ` (пропустил ${res.skipped} дублей и мелочи)` : '';
-  const themed = res.saved - res.images;
-  const imgPart = res.images > 0 ? ` + ${res.images} картинок на полке «Изображения»` : '';
-  return (
-    `✅ Разобрал ${res.saved}: ${themed} по темам${imgPart}${skip}.\n` +
-    'Загляни в /folders или спроси — например «что я сохранял про переезд» (кнопка 🔍 Найти или /find).'
-  );
+
+  const blocks: string[] = [];
+  if (res.saved > 0) {
+    const themed = res.saved - res.images;
+    const imgPart = res.images > 0 ? ` + ${res.images} картинок на полке «Изображения»` : '';
+    blocks.push(`✅ Разобрал ${res.saved}: ${themed} по темам${imgPart}.`);
+  } else {
+    blocks.push('Ничего нового не добавил.');
+  }
+
+  if (res.existingDupeCount > 0) {
+    blocks.push(dupeSection('Эти посты уже были в Бумеранге, не добавил повторно:', res.existingDupes, res.existingDupeCount));
+  }
+  if (res.inBatchDupeCount > 0) {
+    blocks.push(dupeSection('Убрал повторы внутри заливки:', res.inBatchDupes, res.inBatchDupeCount));
+  }
+
+  // Остаток пропуска сверх дублей — мелочь без текста (короткие заметки/эмодзи).
+  const noise = res.skipped - res.existingDupeCount - res.inBatchDupeCount;
+  if (noise > 0) blocks.push(`Пропустил мелочь без текста: ${noise}.`);
+
+  blocks.push('Загляни в /folders или спроси — например «что я сохранял про переезд» (кнопка 🔍 Найти или /find).');
+  return blocks.join('\n\n');
 }

@@ -48,6 +48,7 @@ function makeItem(p: Partial<Item>): Item {
     transcript: null,
     tgFileId: null,
     tgFileUniqueId: null,
+    mediaGroupId: null,
     embedding: null,
     clusterId: null,
     clusterLocked: false,

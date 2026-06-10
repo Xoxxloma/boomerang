@@ -3,7 +3,8 @@ import type { Message } from 'grammy/types';
 import { detect, hasMeaningfulCaption } from './detect.js';
 import { classify } from './classify.js';
 import { fetchLinkMeta } from '../content/og.js';
-import { insertItem, findItemByTgMessageId } from '../db/items.js';
+import { insertItem, findItemByTgMessageId, findDuplicateItem, groupsAlreadyPosted } from '../db/items.js';
+import { getCluster } from '../db/clusters.js';
 import { enqueueProcess, type AckRef } from '../queue/index.js';
 import { IMAGE_SHELF } from '../cluster/assign.js';
 import { fixKeyboard } from '../bot/handlers/callbacks.js';
@@ -19,7 +20,7 @@ export async function saveItem(
   userId: number,
   msg: Message,
   ack?: AckRef,
-): Promise<{ item: Item; category: string }> {
+): Promise<{ item: Item; category: string; duplicate: boolean }> {
   const det = detect(msg);
 
   let title: string | undefined;
@@ -27,11 +28,9 @@ export async function saveItem(
   let tgFileId: string | undefined;
   let tgFileUniqueId: string | undefined;
 
-  if (det.type === 'link' && det.url) {
-    const meta = await fetchLinkMeta(det.url); // title + OG, тело НЕ читаем
-    title = meta.title;
-    description = meta.description;
-  } else if (det.type === 'image') {
+  // Извлекаем id файла/имя документа РАНЬШЕ сетевого fetchLinkMeta: они нужны для дедупа,
+  // а при дубле дорогой OG-запрос вообще не делаем.
+  if (det.type === 'image') {
     // Файл НЕ качаем — только сохраняем id Telegram; байты возьмём временно при OCR в L2.
     const photo = msg.photo?.[msg.photo.length - 1];
     tgFileId = photo?.file_id;
@@ -45,6 +44,20 @@ export async function saveItem(
     }
   }
 
+  // Дедуп ДО вставки (§ тезис): тот же пост уже сохранён → не задваиваем, возвращаем существующий.
+  // Приоритет ключа — как в балк-дедупе: url → file_unique_id → нормализованный текст.
+  const dup = await findDuplicateItem(userId, { url: det.url, fileUid: tgFileUniqueId, text: det.text });
+  if (dup) {
+    const category = dup.clusterId ? ((await getCluster(dup.clusterId))?.name ?? '') : '';
+    return { item: dup, category, duplicate: true };
+  }
+
+  if (det.type === 'link' && det.url) {
+    const meta = await fetchLinkMeta(det.url); // title + OG, тело НЕ читаем
+    title = meta.title;
+    description = meta.description;
+  }
+
   const values: NewItem = {
     userId,
     type: det.type,
@@ -56,6 +69,7 @@ export async function saveItem(
     description: description ?? null,
     tgFileId: tgFileId ?? null,
     tgFileUniqueId: tgFileUniqueId ?? null,
+    mediaGroupId: msg.media_group_id ?? null,
   };
   const item = await insertItem(values);
 
@@ -63,7 +77,14 @@ export async function saveItem(
   const category = det.type === 'image' ? IMAGE_SHELF : await classify(item, userId);
   // ack передаём только для одиночных пересылок — тогда L2 сможет отредактировать «Положил…» при сбое.
   await enqueueProcess(item.id, category, ack);
-  return { item, category };
+  return { item, category, duplicate: false };
+}
+
+/** Текст-подтверждение для уже сохранённого поста (дубль): заголовок + папка, если известны. */
+export function duplicateText(item: Item, category: string): string {
+  const name = item.title ? ` — «${truncate(item.title, 80)}»` : '';
+  const folder = category ? ` Лежит в «${category}».` : '';
+  return `Это уже в Бумеранге${name}.${folder} Повторно не добавил.`;
 }
 
 /**
@@ -88,9 +109,10 @@ export async function flushAlbumMessages(
       itemId = existing.id;
       text = `✅ Уже сохранил${existing.title ? ` — ${truncate(existing.title, 80)}` : ''}`;
     } else {
-      const { item, category } = await saveItem(api, captionMsg.from.id, captionMsg);
+      const { item, category, duplicate } = await saveItem(api, captionMsg.from.id, captionMsg);
       itemId = item.id;
-      text = `✅ Положил в ${label(item.title, category)}`;
+      // Тот же контент другим message_id (мимо findItemByTgMessageId) → дубль: не задвоили, сообщаем.
+      text = duplicate ? duplicateText(item, category) : `✅ Положил в ${label(item.title, category)}`;
     }
     // Правка ack — best-effort: её падение (протухшее/изменённое сообщение) не должно ронять флаш
     // и гонять ретрай (он бы задвоил уже сохранённое).
@@ -99,6 +121,18 @@ export async function flushAlbumMessages(
       .catch(() => {});
     return;
   }
+  // Опоздавший член уже-постнутого альбома: его собратья (с подписью) сохранены прошлым флашем, а этот
+  // переклеймил сессию и пришёл один без подписи. Не кладём его отдельной картинкой — это фото поста.
+  const m0 = messages.find((m) => m.media_group_id && m.from);
+  const gid = m0?.media_group_id;
+  if (gid && m0?.from) {
+    const posted = await groupsAlreadyPosted(m0.from.id, [gid]);
+    if (posted.has(gid)) {
+      await api.editMessageText(ackChatId, ackMessageId, '✅ Уже сохранил этот альбом').catch(() => {});
+      return;
+    }
+  }
+
   let n = 0;
   for (const m of messages) {
     if (!m.from) continue;

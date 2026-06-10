@@ -79,6 +79,9 @@ export const items = pgTable(
     // байты качаем во временный файл по требованию (L2 OCR/чтение документа) и удаляем.
     tgFileId: text('tg_file_id'), // для повторного скачивания через getFile (может протухать со временем)
     tgFileUniqueId: text('tg_file_unique_id'), // стабильный id для дедупа (скачать по нему нельзя)
+    // media_group_id альбома (общий у всех членов); NULL у не-альбомных. Признак «эта группа уже стала
+    // постом» — чтобы опоздавший член-осколок не уехал отдельной картинкой на полку (см. groupsAlreadyPosted).
+    mediaGroupId: text('media_group_id'),
     embedding: vector('embedding', { dimensions: EMBEDDING_DIM }),
     clusterId: uuid('cluster_id').references(() => clusters.id, { onDelete: 'set null' }),
     clusterLocked: boolean('cluster_locked').default(false).notNull(), // правил вручную
@@ -88,6 +91,7 @@ export const items = pgTable(
   (t) => [
     index('items_user_idx').on(t.userId),
     index('items_cluster_idx').on(t.clusterId),
+    index('items_user_media_group_idx').on(t.userId, t.mediaGroupId),
     index('items_embedding_idx').using('hnsw', t.embedding.op('vector_cosine_ops')),
   ],
 );

@@ -5,9 +5,9 @@ import {
   findClusterByName,
   findClusterByNameCI,
   listClusters,
-  updateCentroid,
+  recomputeClusterStats,
 } from '../db/clusters.js';
-import { cosineSimilarity, updatedCentroid } from './math.js';
+import { cosineSimilarity } from './math.js';
 import { tuning } from '../config/tuning.js';
 
 /** Единая полка «Изображения» (§3.4): картинки не дробим на подкатегории. */
@@ -30,12 +30,8 @@ export async function assignToShelf(
     return;
   }
   await assignItemCluster(itemId, shelf.id);
-  if (emb) {
-    const next = shelf.centroid
-      ? updatedCentroid(shelf.centroid as number[], shelf.size, emb)
-      : emb;
-    await updateCentroid(shelf.id, next, shelf.size + 1);
-  }
+  // Центроид/size — от истины (среднее по фактическим записям полки), без дрейфа.
+  await recomputeClusterStats(shelf.id);
 }
 
 /**
@@ -51,6 +47,8 @@ export const NEW_CLUSTER_THRESHOLD = tuning.clusterThreshold;
  */
 export interface AssignResult {
   clusterId: string;
+  /** Имя кластера, куда реально попал item — для финализации L1-подтверждения (шаг «Положил в …»). */
+  name: string;
   isNew: boolean;
   size: number;
 }
@@ -68,20 +66,20 @@ export async function assignCluster(item: Item, seedName: string): Promise<Assig
   const emb = item.embedding as number[];
   const existing = await listClusters(item.userId);
 
-  let best: { id: string; sim: number; centroid: number[]; size: number } | null = null;
+  let best: { id: string; name: string; sim: number; centroid: number[]; size: number } | null = null;
   for (const c of existing) {
     if (!c.centroid) continue;
     const sim = cosineSimilarity(emb, c.centroid as number[]);
     if (!best || sim > best.sim) {
-      best = { id: c.id, sim, centroid: c.centroid as number[], size: c.size };
+      best = { id: c.id, name: c.name, sim, centroid: c.centroid as number[], size: c.size };
     }
   }
 
   if (best && best.sim >= NEW_CLUSTER_THRESHOLD) {
     await assignItemCluster(item.id, best.id);
-    const size = best.size + 1;
-    await updateCentroid(best.id, updatedCentroid(best.centroid, best.size, emb), size);
-    return { clusterId: best.id, isNew: false, size };
+    // size — реальное число записей после добавления (нужно maturity-триггеру: size === порог).
+    const size = await recomputeClusterStats(best.id);
+    return { clusterId: best.id, name: best.name, isNew: false, size };
   }
 
   // Вектор далёк от всех кластеров. Но прежде чем плодить новый — не было бы дубля ПО ИМЕНИ
@@ -92,15 +90,11 @@ export async function assignCluster(item: Item, seedName: string): Promise<Assig
   const byName = await findClusterByNameCI(item.userId, name);
   if (byName) {
     await assignItemCluster(item.id, byName.id);
-    const size = byName.size + 1;
-    const nextCentroid = byName.centroid
-      ? updatedCentroid(byName.centroid as number[], byName.size, emb)
-      : emb;
-    await updateCentroid(byName.id, nextCentroid, size);
-    return { clusterId: byName.id, isNew: false, size };
+    const size = await recomputeClusterStats(byName.id);
+    return { clusterId: byName.id, name: byName.name, isNew: false, size };
   }
 
   const created = await createCluster(item.userId, name, emb);
   await assignItemCluster(item.id, created.id);
-  return { clusterId: created.id, isNew: true, size: 1 };
+  return { clusterId: created.id, name: created.name, isNew: true, size: 1 };
 }

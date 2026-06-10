@@ -3,9 +3,9 @@ import { InlineKeyboard, type Api } from 'grammy';
 import type { Message } from 'grammy/types';
 import { db } from '../db/client.js';
 import { burstPart, burstSession } from '../db/schema.js';
-import { enqueueBurstFlush } from '../queue/index.js';
+import { enqueueBurstFlush, enqueueBurstReflush } from '../queue/index.js';
 import { markImportDone } from '../db/users.js';
-import { batchIngest, type BatchResult } from './batch.js';
+import { batchIngest, DUPE_SAMPLE_CAP, type BatchResult } from './batch.js';
 import { draftsFromMessages } from './draft.js';
 import { makeProgress, finalText } from './progress.js';
 import { checkUserBudget, nextResetUtc, formatResetUtc } from '../ai/usage.js';
@@ -17,7 +17,13 @@ import { checkUserBudget, nextResetUtc, formatResetUtc } from '../ai/usage.js';
  * Вне сессии каждое сообщение идёт обычным путём (мгновенное «Принял»). Апдейты сериализованы по userId
  * (sequentialize), флаш защищён single-flight guard — двойной обработки буфера нет.
  */
-const EDIT_THROTTLE_MS = 1200; // не чаще — правка счётчика (лимиты Telegram на edit)
+const EDIT_THROTTLE_MS = 2000; // не чаще — переякоривание счётчика вниз (send+delete, лимиты Telegram)
+/**
+ * Окно «оседания» альбома: если на момент флаша часть с media_group_id пришла позже, чем (now − это),
+ * альбом ещё досыпается. Не флашим на полуприходе (порвали бы группу на пост + сиротские картинки) —
+ * откладываем коротким добором (enqueueBurstReflush). Telegram шлёт члены альбома в пределах ~1с.
+ */
+const ALBUM_SETTLE_MS = 2500;
 
 const lastEdit = new Map<number, number>(); // userId → когда последний раз правили счётчик
 const flushing = new Set<number>(); // userId, чей буфер прямо сейчас обрабатывается (single-flight)
@@ -52,7 +58,7 @@ export async function startImport(api: Api, userId: number, chatId: number): Pro
   lastEdit.delete(userId);
 
   const text =
-    '🪃 Режим заливки включён. Пересылай сохранённое пачками (в Telegram — до 100 за раз), можно ' +
+    'Режим заливки включён. Пересылай сохранённое пачками (в Telegram — до 100 за раз), можно ' +
     'с паузами — соберу всё в одну заливку, без спама по одному. Нажми «Готово», когда закончишь.';
   const progress = await api.sendMessage(chatId, text, { reply_markup: doneKeyboard() }).catch(() => null);
   if (progress) {
@@ -73,15 +79,31 @@ async function bufferPart(api: Api, userId: number, msg: Message): Promise<void>
     .where(eq(burstSession.userId, userId))
     .returning();
 
-  if (s?.progressChatId && s.progressMessageId) {
+  if (s) {
     const now = Date.now();
+    const text = `Собираю заливку… принял ${s.count}`;
+    const haveSlot = Boolean(s.progressChatId && s.progressMessageId);
     if (now - (lastEdit.get(userId) ?? 0) >= EDIT_THROTTLE_MS) {
       lastEdit.set(userId, now);
-      await api
-        .editMessageText(s.progressChatId, s.progressMessageId, `🪃 Собираю заливку… принял ${s.count}`, {
-          reply_markup: doneKeyboard(),
-        })
-        .catch(() => {});
+      // Переякориваем прогресс ВНИЗ: десятки пересылок выталкивают старое сообщение вверх, и счётчик с
+      // кнопкой «Готово» уходят из поля зрения. Поэтому шлём свежее в конец чата, затем удаляем старое
+      // и переписываем координаты в сессии — так статус и «Готово» всегда на виду. Сначала send, потом
+      // delete (без «дыры»); оба в .catch — старое могло устареть (>48ч)/быть удалено, это не критично.
+      const fresh = await api
+        .sendMessage(msg.chat.id, text, { reply_markup: doneKeyboard() })
+        .catch(() => null);
+      if (fresh) {
+        if (haveSlot) await api.deleteMessage(s.progressChatId!, s.progressMessageId!).catch(() => {});
+        await db
+          .update(burstSession)
+          .set({ progressChatId: fresh.chat.id, progressMessageId: fresh.message_id })
+          .where(eq(burstSession.userId, userId));
+      }
+    } else if (haveSlot) {
+      // Между переякориваниями дёшево правим счётчик НА МЕСТЕ: иначе при быстрой пачке (все части за
+      // <throttle) число застревало на первом показе — «принял 1» на десяток фото. edit дешевле send+delete;
+      // «not modified»/протухшее сообщение — в .catch (не критично, дойдёт со следующей пересылкой/якорем).
+      await api.editMessageText(s.progressChatId!, s.progressMessageId!, text, { reply_markup: doneKeyboard() }).catch(() => {});
     }
   }
   await enqueueBurstFlush(userId); // debounce: окно продлевается на каждую пересылку
@@ -103,12 +125,39 @@ export async function maybeBufferBurst(api: Api, msg: Message): Promise<boolean>
   return false;
 }
 
+/**
+ * Сбой авто-флаша (debounce-воркер): правим прогресс-сообщение, чтобы пользователь не остался без
+ * сигнала (через кнопку «Готово» try/catch в callbacks его уведомляет, а debounce-путь — нет).
+ * Буфер и сессия целы (flushBurst при броске их не трогает) — повторное «Готово» довезёт. Best-effort.
+ */
+export async function notifyBurstFlushFailed(api: Api, userId: number): Promise<void> {
+  const [session] = await db
+    .select({ chatId: burstSession.progressChatId, msgId: burstSession.progressMessageId })
+    .from(burstSession)
+    .where(eq(burstSession.userId, userId))
+    .limit(1);
+  if (!session?.chatId || !session?.msgId) return;
+  await api
+    .editMessageText(
+      session.chatId,
+      session.msgId,
+      'Не получилось долить заливку сейчас — буфер сохранён, ничего не пропало. Нажми «Готово» ещё раз чуть позже.',
+      { reply_markup: doneKeyboard() },
+    )
+    .catch(() => {});
+}
+
 /** Суммирование результатов волн обработки буфера в один итог для финального сообщения. */
 function addResult(acc: BatchResult, r: BatchResult): BatchResult {
   return {
     saved: acc.saved + r.saved,
     images: acc.images + r.images,
     skipped: acc.skipped + r.skipped,
+    existingDupeCount: acc.existingDupeCount + r.existingDupeCount,
+    inBatchDupeCount: acc.inBatchDupeCount + r.inBatchDupeCount,
+    // Счётчики точные; сэмплы имён — обрезаем (для UI достаточно нескольких).
+    existingDupes: [...acc.existingDupes, ...r.existingDupes].slice(0, DUPE_SAMPLE_CAP),
+    inBatchDupes: [...acc.inBatchDupes, ...r.inBatchDupes].slice(0, DUPE_SAMPLE_CAP),
     totalClusters: r.totalClusters, // итоговое число кластеров — из последней волны
     stoppedForBudget: acc.stoppedForBudget || r.stoppedForBudget,
   };
@@ -151,6 +200,30 @@ export async function flushBurst(api: Api, userId: number): Promise<BatchResult 
         break;
       }
 
+      // Гейт оседания альбомов: пока ничего в этом вызове не обработали (total===null) и какой-то альбом
+      // ещё досыпается (часть пришла <ALBUM_SETTLE_MS назад) — НЕ флашим, иначе порвём группу на пост +
+      // сиротские картинки. Откладываем коротким добором, буфер/сессию не трогаем. После обработки первой
+      // волны (total!==null) не ждём: опоздавший осколок уже-постнутого альбома отсеет дроп в batchIngest.
+      if (total === null) {
+        const now = Date.now();
+        const stillArriving = parts.some((p) => {
+          const gid = (p.message as Message).media_group_id;
+          return gid != null && now - p.createdAt.getTime() < ALBUM_SETTLE_MS;
+        });
+        if (stillArriving) {
+          await enqueueBurstReflush(userId);
+          if (chatId && msgId) {
+            await api
+              .editMessageText(chatId, msgId, 'Дособираю альбомы… ещё пару секунд.', {
+                reply_markup: doneKeyboard(),
+              })
+              .catch(() => {});
+          }
+          return { saved: 0, images: 0, skipped: 0, existingDupes: [], inBatchDupes: [],
+            existingDupeCount: 0, inBatchDupeCount: 0, totalClusters: 0, deferred: true };
+        }
+      }
+
       const ids = parts.map((p) => p.id);
       const messages = parts
         .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())
@@ -184,15 +257,27 @@ export async function flushBurst(api: Api, userId: number): Promise<BatchResult 
             chatId,
             msgId,
             savedSoFar > 0
-              ? `🪃 Залил ${savedSoFar}, но упёрся в дневной лимит расхода. Остальное долью после ` +
+              ? `Залил ${savedSoFar}, но упёрся в дневной лимит расхода. Остальное долью после ` +
                   `${resetsAt} — буфер сохранён, ничего не пропадёт. Нажми «Готово» после сброса.`
-              : `🪃 Дневной лимит расхода исчерпан. Долью заливку после ${resetsAt} — буфер сохранён, ` +
+              : `Дневной лимит расхода исчерпан. Долью заливку после ${resetsAt} — буфер сохранён, ` +
                   `ничего не пропадёт. Нажми «Готово» после сброса.`,
             { reply_markup: doneKeyboard() },
           )
           .catch(() => {});
       }
-      return total ?? { saved: 0, images: 0, skipped: 0, totalClusters: 0, stoppedForBudget: true };
+      return (
+        total ?? {
+          saved: 0,
+          images: 0,
+          skipped: 0,
+          existingDupes: [],
+          inBatchDupes: [],
+          existingDupeCount: 0,
+          inBatchDupeCount: 0,
+          totalClusters: 0,
+          stoppedForBudget: true,
+        }
+      );
     }
 
     // Буфер пуст → безопасно закрыть сессию.

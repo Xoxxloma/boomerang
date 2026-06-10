@@ -57,6 +57,13 @@
       "when": 1781028884074,
       "tag": "0007_massive_talon",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1781093643322,
+      "tag": "0008_rare_deathbird",
+      "breakpoints": true
     }
   ]
 }

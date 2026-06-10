@@ -10,12 +10,14 @@ export interface Synthesis {
   sources: Item[];
 }
 
-/** Короткий фрагмент item для контекста LLM. */
+/** Короткий фрагмент item для контекста LLM. Документам даём больше — у них первые сотни символов
+ *  это шапка/реквизиты, фактура дальше по телу; коротким типам хватает 600. */
 function snippet(it: Item): string {
   const parts = [it.title, it.description, it.rawText, it.ocrText, it.transcript]
     .filter((s): s is string => Boolean(s && s.trim()))
     .join(' — ');
-  const body = parts.slice(0, 600);
+  const cap = it.type === 'document' ? tuning.synthDocChars : tuning.synthSnippetChars;
+  const body = parts.slice(0, cap);
   return it.url ? `${body} (${it.url})` : body;
 }
 

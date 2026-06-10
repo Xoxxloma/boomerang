@@ -4,6 +4,7 @@ import type { AssignResult } from '../src/cluster/assign.js';
 
 const res = (over: Partial<AssignResult>): AssignResult => ({
   clusterId: 'c1',
+  name: 'Тема',
   isNew: false,
   size: 2,
   ...over,

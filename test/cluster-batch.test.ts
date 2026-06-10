@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { clusterEmbeddings, blendCentroid, type ClusterPoint } from '../src/cluster/batch.js';
+import { clusterEmbeddings, type ClusterPoint } from '../src/cluster/batch.js';
 
 function pt(itemId: string, emb: number[]): ClusterPoint {
   return { itemId, emb, sampleText: itemId };
@@ -43,14 +43,5 @@ describe('clusterEmbeddings', () => {
     const { newGroups } = clusterEmbeddings([], points);
     expect(newGroups).toHaveLength(1);
     expect(newGroups[0]!.sampleTexts.length).toBeLessThanOrEqual(5);
-  });
-});
-
-describe('blendCentroid', () => {
-  it('смешивает по весам size/addCount', () => {
-    // старый [0] вес 1 + добавленный [10] вес 1 → [5]
-    expect(blendCentroid([0], 1, [10], 1)).toEqual([5]);
-    // старый [0] вес 9 + добавленный [10] вес 1 → [1]
-    expect(blendCentroid([0], 9, [10], 1)).toEqual([1]);
   });
 });

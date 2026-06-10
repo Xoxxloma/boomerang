@@ -60,11 +60,23 @@ export async function createCluster(
   return row;
 }
 
-export async function updateCentroid(id: string, centroid: number[], size: number): Promise<void> {
-  await db
-    .update(clusters)
-    .set({ centroid, size, updatedAt: sql`now()` })
-    .where(eq(clusters.id, id));
+/**
+ * Пересчитать центроид и size кластера ОТ ИСТИНЫ — среднее по фактическим эмбеддингам записей и их
+ * реальное число. В отличие от инкрементального обновления, не дрейфует: удаление/перенос учитываются
+ * автоматически, параллельные вызовы пишут одно и то же верное среднее (нет lost-update), а size не
+ * расходится с реальностью (см. listClustersWithCounts). avg(vector) — нативный аггрегат pgvector
+ * (≥0.5; на проде 0.8.2). Пустой кластер → centroid NULL, size 0 (assignCluster такой пропускает).
+ * Эмбеддинги записей НЕ пересчитываются (дорогой шаг сделан один раз) — только дешёвое усреднение в БД.
+ */
+export async function recomputeClusterStats(clusterId: string): Promise<number> {
+  const rows = await db.execute<{ size: number }>(sql`
+    update clusters set
+      centroid = (select avg(embedding) from items where cluster_id = ${clusterId} and embedding is not null),
+      size = (select count(*) from items where cluster_id = ${clusterId}),
+      updated_at = now()
+    where id = ${clusterId}
+    returning size`);
+  return Number(rows[0]?.size ?? 0);
 }
 
 export async function renameCluster(id: string, name: string): Promise<void> {

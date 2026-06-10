@@ -30,6 +30,9 @@ export interface BurstFlushJob {
  */
 const BURST_DEBOUNCE_SEC = 1800;
 
+/** Короткий добор флаша: если на момент флаша альбомы ещё «сыпались», дольём через столько секунд. */
+const BURST_REFLUSH_SEC = 3;
+
 /**
  * Поставить L2-обработку item в фон (эмбеддинг/OCR/чтение док/кластер).
  * singletonKey=itemId дедупит повторные постановки одного item.
@@ -69,4 +72,16 @@ export async function enqueueBurstFlush(userId: number): Promise<void> {
     BURST_DEBOUNCE_SEC,
     String(userId),
   );
+}
+
+/**
+ * Короткий добор флаша заливки: ставится, когда флаш отложен из-за ещё «оседающих» альбомов (части
+ * пришли только что). Отдельный singletonKey, чтобы не конфликтовать с дебаунс-флашем (ключ = userId).
+ */
+export async function enqueueBurstReflush(userId: number): Promise<void> {
+  await getBoss().send(Q_BURST_FLUSH, { userId } satisfies BurstFlushJob, {
+    startAfter: BURST_REFLUSH_SEC,
+    singletonKey: `reflush:${userId}`,
+    retryLimit: 2,
+  });
 }

@@ -1,6 +1,7 @@
-import { and, cosineDistance, desc, eq, isNotNull, isNull, ne, sql } from 'drizzle-orm';
+import { and, cosineDistance, desc, eq, inArray, isNotNull, isNull, ne, sql } from 'drizzle-orm';
 import { db } from './client.js';
 import { items, type Item, type NewItem } from './schema.js';
+import { recomputeClusterStats } from './clusters.js';
 
 /** Каналы/авторы (sourceChat) пользователя с числом записей — для просмотра «по каналу» (/folders). */
 export async function listChannels(userId: number): Promise<{ sourceChat: string; count: number }[]> {
@@ -63,6 +64,23 @@ export async function insertItems(values: NewItem[]): Promise<Item[]> {
   return out;
 }
 
+/**
+ * Из переданных media_group_id вернуть те, что уже стали ПОСТОМ (есть не-image запись с этим gid).
+ * Альбом с подписью → член-с-подписью сохранён как tg_post/text → gid «занят постом». Альбом без подписи
+ * даёт лишь image-записи → сюда не попадёт (его члены законно лежат на полке). Нужно, чтобы опоздавший
+ * член-осколок уже-постнутого альбома дропался, а не уезжал отдельной картинкой (см. batch B4 / save B5).
+ */
+export async function groupsAlreadyPosted(userId: number, gids: string[]): Promise<Set<string>> {
+  if (gids.length === 0) return new Set();
+  const rows = await db
+    .selectDistinct({ gid: items.mediaGroupId })
+    .from(items)
+    .where(
+      and(eq(items.userId, userId), inArray(items.mediaGroupId, gids), ne(items.type, 'image')),
+    );
+  return new Set(rows.map((r) => r.gid).filter((g): g is string => g != null));
+}
+
 /** Нормализованный ключ текста для дедупа (общий для batch-дедупа и сверки с БД). */
 export function textKey(s: string | null): string {
   return (s ?? '').toLowerCase().replace(/\s+/g, ' ').trim();
@@ -96,6 +114,33 @@ export async function existingDedupKeys(
 
 export async function getItem(id: string): Promise<Item | undefined> {
   const [row] = await db.select().from(items).where(eq(items.id, id)).limit(1);
+  return row;
+}
+
+/**
+ * Найти уже сохранённую запись-дубль для одиночной пересылки — чтобы не задваивать (§ тезис: дубли
+ * засоряют возврат). Точечный запрос (не грузим все ключи как existingDedupKeys). Приоритет тот же,
+ * что в дедупе балка: url → tg_file_unique_id → нормализованный текст. Берём самую раннюю
+ * (createdAt asc), чтобы «↑ Источник» вёл к первому сохранению. Нормализация текста в SQL должна
+ * совпадать с textKey (lower + схлопывание пробелов + trim).
+ */
+export async function findDuplicateItem(
+  userId: number,
+  key: { url?: string | null; fileUid?: string | null; text?: string | null },
+): Promise<Item | undefined> {
+  let where;
+  if (key.url) {
+    where = and(eq(items.userId, userId), eq(items.url, key.url));
+  } else if (key.fileUid) {
+    where = and(eq(items.userId, userId), eq(items.tgFileUniqueId, key.fileUid));
+  } else {
+    const t = textKey(key.text ?? null);
+    if (!t) return undefined;
+    // POSIX-класс, а не '\s': в JS-шаблоне '\s' схлопывается до 's' (Postgres ловил бы буквы «s», не пробелы).
+    const norm = sql`btrim(regexp_replace(lower(coalesce(${items.rawText}, '')), '[[:space:]]+', ' ', 'g'))`;
+    where = and(eq(items.userId, userId), sql`${norm} = ${t}`);
+  }
+  const [row] = await db.select().from(items).where(where).orderBy(items.createdAt).limit(1);
   return row;
 }
 
@@ -152,7 +197,10 @@ export async function deleteItem(id: string, userId: number): Promise<boolean> {
   const res = await db
     .delete(items)
     .where(and(eq(items.id, id), eq(items.userId, userId)))
-    .returning({ id: items.id });
+    .returning({ id: items.id, clusterId: items.clusterId });
+  // Запись ушла из кластера — пересчитываем его центроид/size от истины (иначе они «помнят» удалённое).
+  const clusterId = res[0]?.clusterId;
+  if (clusterId) await recomputeClusterStats(clusterId);
   return res.length > 0;
 }
 

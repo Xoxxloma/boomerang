@@ -56,7 +56,7 @@ export async function maybeSurface(item: Item, result: AssignResult): Promise<vo
 
     if (trigger === 'maturity') {
       // Созревание — раз на тему, дневным лимитом НЕ режем. Кнопка «📋 Свести» вместо текста /find.
-      const text = `🪃 У тебя накопилось ${result.size} материалов в теме «${cluster.name}». Свести в один ответ?`;
+      const text = `У тебя накопилось ${result.size} материалов в теме «${cluster.name}». Свести в один ответ?`;
       await setClusterMatured(cluster.id);
       await logSurfacing({
         userId: item.userId,
@@ -84,7 +84,7 @@ export async function maybeSurface(item: Item, result: AssignResult): Promise<vo
     // первый opt-in-образец не страдают (на чистом дне count=0). Maturity-сообщения тоже считаются.
     if ((await countSurfacedToday(item.userId)) >= tuning.proactiveDailyCap) return;
 
-    const text = `🪃 Кстати, по этой теме ты уже сохранял: ${titleOf(old)}`;
+    const text = `Кстати, по этой теме ты уже сохранял: ${titleOf(old)}`;
     await logSurfacing({
       userId: item.userId,
       kind: 'resonance',

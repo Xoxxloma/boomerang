@@ -15,6 +15,8 @@ export interface Draft {
   title: string | null;
   tgFileId: string | null;
   tgFileUniqueId: string | null;
+  /** media_group_id альбома (общий у членов); null у одиночек/экспорта. Для дропа осколков (см. batch). */
+  mediaGroupId: string | null;
 }
 
 /** Черновик из пересланного сообщения (всплеск). Зеркало saveItem, но без OG-фетча и скачивания. */
@@ -43,6 +45,7 @@ function draftFromMessage(msg: Message): Draft {
     title,
     tgFileId,
     tgFileUniqueId,
+    mediaGroupId: msg.media_group_id ?? null,
   };
 }
 
@@ -166,6 +169,7 @@ export function draftFromExport(m: ExportMessage): Draft | null {
     title,
     tgFileId: null, // экспорт не даёт telegram file_id
     tgFileUniqueId: null,
+    mediaGroupId: null, // экспорт идёт уже разнесённым по сообщениям, media_group не реконструируем
   };
 }
 

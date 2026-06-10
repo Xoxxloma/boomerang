@@ -14,10 +14,12 @@ const MAX_EMBED_CHARS = 8000;
 /**
  * L2-пайплайн фоном: (OCR для картинок) → эмбеддинг → отнесение к кластеру.
  * seedCategory — имя для нового кластера (из L1), чтобы не звать LLM повторно.
+ * Возвращает имя кластера, куда реально попал текстовый item (для финализации L1-подтверждения,
+ * шаг «Положил в …»). null — картинка/без кластера/cluster_locked: реконсилировать нечего.
  */
-export async function processItem(itemId: string, seedCategory: string): Promise<void> {
+export async function processItem(itemId: string, seedCategory: string): Promise<string | null> {
   let item = await getItem(itemId);
-  if (!item) return;
+  if (!item) return null;
 
   // Картинки: OCR в ocr_text (только индекс, §3.4). Файл качаем во временный и сразу удаляем.
   if (item.type === 'image' && item.tgFileId && !item.ocrText) {
@@ -47,6 +49,9 @@ export async function processItem(itemId: string, seedCategory: string): Promise
     await setEmbedding(itemId, emb);
   }
 
+  // Имя реальной полки (для шага «Положил в …»). Картинки/без-кластера/locked → null (не финализируем).
+  let clusterName: string | null = null;
+
   if (item.type === 'image') {
     // Все картинки — на одну полку, без тематического дробления. Если уже на полке (заливка пачкой
     // проставила cluster заранее) — не переназначаем: этот прогон лишь до-OCR-ил и обновил эмбеддинг
@@ -58,6 +63,7 @@ export async function processItem(itemId: string, seedCategory: string): Promise
     // assignCluster задвоил бы его в центроиде/размере. Как и на пути картинок (!item.clusterId).
     if (withEmb && !withEmb.clusterId) {
       const res = await assignCluster(withEmb, seedCategory);
+      clusterName = res?.name ?? null;
       // Проактивное всплытие (режим 2) — best-effort: его падение НЕ должно ронять джобу и гонять
       // переотнесение по кругу. Логируем и идём дальше.
       if (res) {
@@ -73,4 +79,6 @@ export async function processItem(itemId: string, seedCategory: string): Promise
   // Индексировать было нечего (нет текста на эмбеддинг) — но обработка прошла. Помечаем как
   // обработанное, чтобы такие записи не висели «застрявшими» наравне с реальными сбоями (см. findStuckItems).
   if (!emb) await markIndexed(itemId);
+
+  return clusterName;
 }

@@ -3,19 +3,21 @@ import { getItem, deleteItem, itemDisplayName } from '../../db/items.js';
 import { enqueueProcess } from '../../queue/index.js';
 import { IMAGE_SHELF } from '../../cluster/assign.js';
 import { classify } from '../../ingest/classify.js';
-import { handleQuery } from './search.js';
+import { respondWithSynthesis } from './search.js';
+import { listClusterItems } from '../../retrieval/search.js';
+import { checkUserBudget, formatResetUtc } from '../../ai/usage.js';
+import { tuning } from '../../config/tuning.js';
 import {
   assignItemCluster,
   createCluster,
   findClusterByNameCI,
   getCluster,
   listClusters,
-  updateCentroid,
+  recomputeClusterStats,
 } from '../../db/clusters.js';
-import { updatedCentroid } from '../../cluster/math.js';
 import { setEditPending, getEditPending, delEditPending } from '../../db/sessions.js';
 import { setProactiveMode } from '../../db/users.js';
-import { flushBurst, doneKeyboard } from '../../import/burst.js';
+import { flushBurst, doneKeyboard, startImport } from '../../import/burst.js';
 import type { Item } from '../../db/schema.js';
 
 /**
@@ -66,7 +68,40 @@ function renderCard(item: Item): string {
     if (lines.length) lines.push('');
     lines.push(body.length > CARD_MAX ? `${body.slice(0, CARD_MAX)}…` : body);
   }
-  return lines.join('\n');
+  // Никогда не отдаём пустую строку (Telegram отвергнет sendMessage('')): фолбэк — имя записи.
+  return lines.join('\n') || itemDisplayName(item);
+}
+
+/** Подпись фото-карточки: только источник (сырой OCR не показываем, §3.4). Пусто → без подписи. */
+function imageCaption(item: Item): string | undefined {
+  return item.sourceChat ? `📡 из: ${item.sourceChat}` : undefined;
+}
+
+/**
+ * Карточка картинки = САМО фото (а не текст): у голого изображения нет заголовка/тела, и текстовая
+ * карточка была пустой — «не видно, что за изображение». Фото нельзя editMessageText, поэтому слот
+ * карточки пересоздаём: удаляем прежнюю (любого типа) и шлём фото.
+ */
+async function showPhotoCard(ctx: Context, chatId: number, item: Item): Promise<void> {
+  const existing = lastCard.get(chatId);
+  if (existing != null) {
+    await ctx.api.deleteMessage(chatId, existing).catch(() => {});
+    lastCard.delete(chatId);
+  }
+  try {
+    const sent = await ctx.replyWithPhoto(item.tgFileId!, {
+      caption: imageCaption(item),
+      reply_markup: cardKeyboard(item),
+    });
+    lastCard.set(chatId, sent.message_id);
+  } catch {
+    // file_id мог протухнуть (фото не отдаётся) — не оставляем юзера без карточки: шлём текстовый фолбэк.
+    const sent = await ctx.reply(renderCard(item), {
+      reply_markup: cardKeyboard(item),
+      link_preview_options: { is_disabled: true as const },
+    });
+    lastCard.set(chatId, sent.message_id);
+  }
 }
 
 /**
@@ -76,6 +111,11 @@ function renderCard(item: Item): string {
 async function showCard(ctx: Context, item: Item): Promise<void> {
   const chatId = ctx.chat?.id;
   if (chatId == null) return;
+  // Картинку показываем как фото (видно содержимое), остальное — текстовой карточкой.
+  if (item.type === 'image' && item.tgFileId) {
+    await showPhotoCard(ctx, chatId, item);
+    return;
+  }
   const opts = {
     reply_markup: cardKeyboard(item),
     link_preview_options: { is_disabled: true as const },
@@ -104,6 +144,19 @@ export function fixKeyboard(itemId: string): InlineKeyboard {
     .text('🗑 Удалить', `del:${itemId}`);
 }
 
+/**
+ * Клавиатура под сообщением о дубле: «↑ Источник» (реплай к оригиналу — единственный нативный
+ * способ «дать ссылку» в личке) + удаление. 🔗 Открыть — если у записи есть внешний url.
+ * Колбэки src:/del: уже зарегистрированы.
+ */
+export function sourceKeyboard(item: Item): InlineKeyboard {
+  const kb = new InlineKeyboard();
+  if (item.url) kb.url('🔗 Открыть', item.url);
+  if (item.tgMessageId) kb.text('↑ Источник', `src:${item.id}`);
+  kb.text('🗑 Удалить', `del:${item.id}`);
+  return kb;
+}
+
 export function registerCallbacks(bot: Bot): void {
   // Шаг 1: показать список существующих категорий для переноса.
   bot.callbackQuery(/^fix:(.+)$/, async (ctx) => {
@@ -126,8 +179,16 @@ export function registerCallbacks(bot: Bot): void {
     for (const c of cs.slice(0, 12)) {
       kb.text(c.name, `pick:${c.id}`).row();
     }
-    kb.text('➕ Новая категория', `newcat:${itemId}`);
+    kb.text('➕ Новая категория', `newcat:${itemId}`).row();
+    kb.text('⬅ Назад', `unfix:${itemId}`);
     await ctx.editMessageReplyMarkup({ reply_markup: kb });
+    await ctx.answerCallbackQuery();
+  });
+
+  // Выход из режима выбора категории обратно к L1-клавиатуре (🔀/🗑) — чтобы не было дедлока.
+  bot.callbackQuery(/^unfix:(.+)$/, async (ctx) => {
+    const itemId = ctx.match[1]!;
+    await ctx.editMessageReplyMarkup({ reply_markup: fixKeyboard(itemId) }).catch(() => {});
     await ctx.answerCallbackQuery();
   });
 
@@ -153,12 +214,12 @@ export function registerCallbacks(bot: Bot): void {
       return ctx.answerCallbackQuery({ text: 'Запись не найдена', show_alert: true });
     }
 
-    // Ручная правка учит систему: фиксируем и подтягиваем центроид к этому примеру.
+    // Ручная правка учит систему: фиксируем и пересчитываем центроид/size кластера от истины.
+    const prevClusterId = item.clusterId;
     await assignItemCluster(itemId, clusterId, true);
-    if (item?.embedding && cluster.centroid) {
-      const next = updatedCentroid(cluster.centroid as number[], cluster.size, item.embedding as number[]);
-      await updateCentroid(clusterId, next, cluster.size + 1);
-    }
+    await recomputeClusterStats(clusterId);
+    // Запись ушла из прежнего кластера — его статистику тоже пересчитываем (иначе центроид/size «помнят» её).
+    if (prevClusterId && prevClusterId !== clusterId) await recomputeClusterStats(prevClusterId);
 
     await delEditPending(msg.chat.id, msg.message_id);
     await ctx.editMessageText(`✅ Перенёс в «${cluster.name}»`);
@@ -169,7 +230,7 @@ export function registerCallbacks(bot: Bot): void {
   bot.callbackQuery('optin:on', async (ctx) => {
     await setProactiveMode(ctx.from.id, 'on');
     await ctx.editMessageReplyMarkup({}).catch(() => {});
-    await ctx.answerCallbackQuery({ text: 'Включил напоминания 🪃' });
+    await ctx.answerCallbackQuery({ text: 'Включил напоминания' });
   });
   bot.callbackQuery('optin:off', async (ctx) => {
     await setProactiveMode(ctx.from.id, 'off');
@@ -177,16 +238,46 @@ export function registerCallbacks(bot: Bot): void {
     await ctx.answerCallbackQuery({ text: 'Ок, не буду напоминать' });
   });
 
-  // «📋 Свести» из сообщения о созревании темы (режим 2) → синтез по теме через обычный путь поиска
-  // (handleQuery сам уважает бюджет-гард, degraded-фоллбэк и шлёт ответ со ссылками на источники).
+  // «📋 Свести «тему»» → связный синтез по РЕАЛЬНЫМ записям кластера (clusterId у нас есть). НЕ гоним
+  // имя темы через handleQuery/parseQuery: иначе имя-как-вид-материала («Документы») распознаётся как
+  // фильтр-тип и уводит в плоский список без синтеза. respondWithSynthesis сам уважает degraded-фоллбэк.
   bot.callbackQuery(/^synth:(.+)$/, async (ctx) => {
     const clusterId = ctx.match[1]!;
+    const userId = ctx.from.id;
     const cluster = await getCluster(clusterId);
-    if (!cluster || cluster.userId !== ctx.from.id) {
+    if (!cluster || cluster.userId !== userId) {
       return ctx.answerCallbackQuery({ text: 'Тема не найдена', show_alert: true });
     }
+
+    // Изображения не сводятся (нет текста, §3.4). Кнопку для полки не даём, но старая (stale) могла
+    // остаться в прежнем сообщении — отвечаем честно, а не гоним LLM на «отказ».
+    if (cluster.name === IMAGE_SHELF) {
+      return ctx.answerCallbackQuery({
+        text: 'По изображениям сводка не строится — у них нет текста.',
+        show_alert: true,
+      });
+    }
+
+    // Бюджет-гард (как в handleQuery): не тратим синтез сверх персонального/глобального потолка.
+    const budget = checkUserBudget(userId);
+    if (!budget.allowed) {
+      return ctx.answerCallbackQuery({
+        text:
+          budget.reason === 'user'
+            ? `Дневной лимит запросов исчерпан. Обновится в ${formatResetUtc(budget.resetsAt)}.`
+            : 'Синтез временно недоступен из-за нагрузки — попробуй позже.',
+        show_alert: true,
+      });
+    }
+
+    const clusterItems = await listClusterItems(userId, clusterId, tuning.synthMaxSources);
+    if (clusterItems.length === 0) {
+      return ctx.answerCallbackQuery({ text: 'В этой теме пока нечего сводить', show_alert: true });
+    }
+
     await ctx.answerCallbackQuery({ text: 'Свожу…' });
-    await handleQuery(ctx, cluster.name);
+    const hits = clusterItems.map((item) => ({ item, similarity: 1 }));
+    await respondWithSynthesis(ctx, cluster.name, hits, userId);
   });
 
   // «Повторить» из сообщения о сбое индексации — перезапуск L2 для КОНКРЕТНОЙ записи (это сообщение).
@@ -250,6 +341,16 @@ export function registerCallbacks(bot: Bot): void {
     const msgId = ctx.callbackQuery.message?.message_id;
     if (chatId != null && lastCard.get(chatId) === msgId) lastCard.delete(chatId);
     await ctx.answerCallbackQuery();
+  });
+
+  // «Залить из Избранного» с приветственного экрана → старт сессии заливки (эквивалент /import).
+  bot.callbackQuery('import:start', async (ctx) => {
+    const chatId = ctx.chat?.id;
+    if (chatId == null) return ctx.answerCallbackQuery();
+    const started = await startImport(ctx.api, ctx.from.id, chatId);
+    await ctx.answerCallbackQuery(
+      started ? { text: 'Режим заливки включён' } : { text: 'Заливка уже идёт — пересылай дальше' },
+    );
   });
 
   // «Готово» под прогрессом заливки → немедленный флаш буфера. flushBurst сам правит прогресс на итог.
@@ -361,6 +462,11 @@ export function registerCallbacks(bot: Bot): void {
       reply_markup: { force_reply: true },
     });
     await setEditPending(prompt.chat.id, prompt.message_id, itemId);
+    // Пока ждём имя — у исходного сообщения оставляем только выход назад к списку категорий
+    // (на самом force_reply кнопок быть не может — это и создавало дедлок). fix: пересоберёт список.
+    await ctx
+      .editMessageReplyMarkup({ reply_markup: new InlineKeyboard().text('⬅ Назад', `fix:${itemId}`) })
+      .catch(() => {});
     await ctx.answerCallbackQuery();
   });
 
@@ -388,20 +494,21 @@ export function registerCallbacks(bot: Bot): void {
     }
 
     const emb = (item.embedding as number[] | null) ?? null;
+    const prevClusterId = item.clusterId;
     const existing = await findClusterByNameCI(ctx.from.id, name);
     if (existing) {
       // Категория уже есть (в любом регистре) — переносим, не плодим дубль. Ручная правка → lock.
       await assignItemCluster(itemId, existing.id, true);
-      if (emb && existing.centroid) {
-        const nextCentroid = updatedCentroid(existing.centroid as number[], existing.size, emb);
-        await updateCentroid(existing.id, nextCentroid, existing.size + 1);
-      }
+      await recomputeClusterStats(existing.id);
       await ctx.reply(`✅ Перенёс в «${existing.name}».`);
     } else {
+      // Новый кластер: создаём с эмбеддингом записи как стартовым центроидом (единственный член).
       const created = await createCluster(ctx.from.id, name, emb);
       await assignItemCluster(itemId, created.id, true);
       await ctx.reply(`✅ Создал категорию «${name}» и положил туда.`);
     }
+    // Запись ушла из прежнего кластера — пересчитываем его статистику от истины.
+    if (prevClusterId) await recomputeClusterStats(prevClusterId);
 
     await delEditPending(ctx.chat.id, replyTo.message_id);
   });

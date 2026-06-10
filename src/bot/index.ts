@@ -1,5 +1,7 @@
 import { Bot } from 'grammy';
 import { sequentialize } from '@grammyjs/runner';
+import { apiThrottler } from '@grammyjs/transformer-throttler';
+import { autoRetry } from '@grammyjs/auto-retry';
 import { env } from '../config/env.js';
 import { ensureUser } from '../db/users.js';
 import { registerCommands } from './handlers/commands.js';
@@ -7,9 +9,38 @@ import { registerSearch } from './handlers/search.js';
 import { registerCallbacks } from './handlers/callbacks.js';
 import { registerBrowse } from './handlers/browse.js';
 import { registerIngest } from './handlers/ingest.js';
+import { searchReplyKeyboard } from './handlers/search.js';
 
 export function createBot(): Bot {
   const bot = new Bot(env.BOT_TOKEN);
+
+  // Reply-клавиатура «🔍 Найти» — директива уровня чата (не сообщения), живёт независимо от
+  // inline-кнопок. Клиент Telegram может её свернуть/сбросить; ставить только на /start ненадёжно —
+  // кнопка пропадает и не возвращается. Поэтому «дошиваем» её к исходящим sendMessage без своей
+  // разметки: клавиатура самовосстанавливается на обычных ответах бота («не нашёл», итог поиска и т.п.).
+  //
+  // НЕ трогаем: (1) сообщения со своей разметкой (force_reply, inline-кнопки, карточки);
+  // (2) прямые ответы на контент пользователя (reply_parameters) — это транзитные ack («Принял ✅»),
+  // которые ПОТОМ редактируются (→ «Положил в …»). Сообщение, отправленное с reply-клавиатурой,
+  // Telegram редактировать запрещает («message can't be edited») — поэтому ack должны уходить без неё.
+  bot.api.config.use((prev, method, payload, signal) => {
+    if (method === 'sendMessage' && payload) {
+      const p = payload as { reply_markup?: unknown; reply_parameters?: unknown };
+      if (!p.reply_markup && !p.reply_parameters) p.reply_markup = searchReplyKeyboard;
+    }
+    return prev(method, payload, signal);
+  });
+
+  // Исходящие к Telegram: авторетрай + троттлер на транспортном уровне (один Api обслуживает и
+  // пользовательский путь, и фоновых воркеров — см. setBotApi(bot.api) в src/index.ts).
+  // Порядок исполнения трансформеров — «снаружи внутрь» в порядке .use(): autoRetry внешний,
+  // throttler внутренний → каждая повторная попытка авторетрая заново проходит троттлер (иначе
+  // ретраи под флудом обходили бы лимит и снова ловили 429).
+  // Капы (3 × 20с ≈ 60с макс. блокировки одного вызова) много меньше pg-boss visibility-timeout
+  // (дефолт 900с) → джоба не «протухнет» из-за ожидания ретрая. autoRetry повторяет только при
+  // 429/flood (Telegram вызов ОТКЛОНИЛ) → дублей отправленных сообщений нет.
+  bot.api.config.use(autoRetry({ maxRetryAttempts: 3, maxDelaySeconds: 20 }));
+  bot.api.config.use(apiThrottler());
 
   // Сериализуем апдейты по пользователю: приём пачкой меняет общее состояние сессии заливки в БД
   // (флаг/счётчик), параллельная обработка апдейтов одного юзера дала бы гонку. Разные юзеры — параллельно.

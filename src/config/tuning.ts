@@ -42,8 +42,10 @@ export const tuning = {
   synthMaxTokens: num('SYNTH_MAX_TOKENS', 700),
   /** Сколько источников максимум отдаём в синтез (bound на размер промпта). */
   synthMaxSources: num('SYNTH_MAX_SOURCES', 8),
-  /** Потолок токенов на дайджест (режим 3). */
-  digestMaxTokens: num('DIGEST_MAX_TOKENS', 500),
+  /** Потолок символов на источник в контексте синтеза (коротким типам хватает — подпись/title/OG). */
+  synthSnippetChars: num('SYNTH_SNIPPET_CHARS', 600),
+  /** Потолок символов на ОДИН документ в контексте синтеза (у тела до 40k шапки мало — даём фактуру). */
+  synthDocChars: num('SYNTH_DOC_CHARS', 3000),
   /** Персональный дневной потолок расхода ($/юзер/день). Превышение → стоп этому юзеру до полуночи UTC. */
   userDailyCostCeilingUsd: num('USER_DAILY_COST_CEILING_USD', 0.5),
   /** Мягкий общий дневной порог ($): выше — degraded (режем дорогую генерацию). */

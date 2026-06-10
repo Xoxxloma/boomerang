@@ -1,9 +1,10 @@
 import type { Bot } from 'grammy';
 import { bufferAlbumPart } from '../../ingest/album.js';
-import { saveItem, label } from '../../ingest/save.js';
+import { saveItem, label, duplicateText } from '../../ingest/save.js';
 import { maybeBufferBurst } from '../../import/burst.js';
 import { isExportDocument, handleExport } from '../../import/export.js';
-import { fixKeyboard } from './callbacks.js';
+import { IMAGE_SHELF } from '../../cluster/assign.js';
+import { fixKeyboard, sourceKeyboard } from './callbacks.js';
 
 /**
  * Приём контента — Level 1 (синхронно, §5):
@@ -38,10 +39,28 @@ export function registerIngest(bot: Bot): void {
     try {
       // Координаты ack-сообщения → L2 сможет отредактировать его при сбое индексации (1.4).
       const ackRef = { chatId: ack.chat.id, messageId: ack.message_id };
-      const { item, category } = await saveItem(ctx.api, ctx.from.id, ctx.message, ackRef);
-      await ctx.api.editMessageText(ack.chat.id, ack.message_id, `✅ Положил в ${label(item.title, category)}`, {
-        reply_markup: fixKeyboard(item.id),
-      });
+      const { item, category, duplicate } = await saveItem(ctx.api, ctx.from.id, ctx.message, ackRef);
+      if (duplicate) {
+        // Тот же пост уже сохранён → не задвоили; даём перейти к оригиналу (§ тезис: дубли не копим).
+        await ctx.api.editMessageText(ack.chat.id, ack.message_id, duplicateText(item, category), {
+          reply_markup: sourceKeyboard(item),
+        });
+      } else if (category === IMAGE_SHELF) {
+        // Картинки детерминированно идут на полку «Изображения» — сразу финал, без «предварительно».
+        await ctx.api.editMessageText(ack.chat.id, ack.message_id, `✅ Положил в ${label(item.title, category)}`, {
+          reply_markup: fixKeyboard(item.id),
+        });
+      } else {
+        // L1-метка предварительна: реальную полку определит L2 (assignCluster по эмбеддингу) и
+        // финализирует это сообщение шагом «Положил в …» с кнопками (см. queue/worker.ts).
+        // БЕЗ клавиатуры: «Не та тема»/«Удалить» появятся только на финале — пока тема не определена,
+        // править/лочить категорию нечего (заодно нет гонки lock-до-L2).
+        await ctx.api.editMessageText(
+          ack.chat.id,
+          ack.message_id,
+          `🔖 Принял, определяю тему… (предварительно «${category}»)`,
+        );
+      }
     } catch (err) {
       console.error('ingest error:', err);
       await ctx.api

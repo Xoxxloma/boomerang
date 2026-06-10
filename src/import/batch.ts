@@ -1,10 +1,10 @@
 import type { Draft } from './draft.js';
 import type { Item, NewItem } from '../db/schema.js';
-import { insertItems, existingDedupKeys, textKey } from '../db/items.js';
+import { insertItems, existingDedupKeys, textKey, groupsAlreadyPosted } from '../db/items.js';
 import {
   listClusters,
   createCluster,
-  updateCentroid,
+  recomputeClusterStats,
   assignItemsToCluster,
   findClusterByNameCI,
 } from '../db/clusters.js';
@@ -16,7 +16,7 @@ import { CLUSTER_NAME_SYSTEM, clusterNamePrompt } from '../ai/prompts.js';
 import { buildIndexText, type Indexable } from '../ingest/extract.js';
 import { IMAGE_SHELF } from '../cluster/assign.js';
 import { enqueueProcess } from '../queue/index.js';
-import { clusterEmbeddings, blendCentroid, type SeedCluster, type ClusterPoint } from '../cluster/batch.js';
+import { clusterEmbeddings, type SeedCluster, type ClusterPoint } from '../cluster/batch.js';
 
 /** Страховка от мегаархивов: больше не обрабатываем за один заход (лог при урезании). */
 const MAX_ITEMS = 20000;
@@ -29,11 +29,22 @@ const MIN_TEXT_LEN = 10;
 /** Параллельность LLM-нейминга кластеров. */
 const NAME_CONCURRENCY = 5;
 
+/** Предел длины сэмпла имён дублей в результате (для UI-списка; счётчики точные). */
+export const DUPE_SAMPLE_CAP = 20;
+
 export interface BatchResult {
   saved: number;
   /** Сколько из saved — картинки (на полке «Изображения», не в тематических темах). */
   images: number;
   skipped: number;
+  /** Имена постов, уже бывших в Бумеранге (сверка с БД), не добавлены повторно. Сэмпл ≤ DUPE_SAMPLE_CAP. */
+  existingDupes: string[];
+  /** Имена повторов внутри самой заливки (схлопнуты). Сэмпл ≤ DUPE_SAMPLE_CAP. */
+  inBatchDupes: string[];
+  /** Точное число «уже было в Бумеранге» (может превышать длину сэмпла). */
+  existingDupeCount: number;
+  /** Точное число повторов внутри заливки. */
+  inBatchDupeCount: number;
   totalClusters: number;
   /**
    * Заливка остановлена на дневном лимите расхода: уже векторизованное вставлено, остаток пула —
@@ -41,21 +52,46 @@ export interface BatchResult {
    * сессию и не удалять буфер. См. § бюджет-ядро.
    */
   stoppedForBudget?: boolean;
+  /** Флаш отложен (альбомы ещё оседали) — буфер/сессия целы, дольём коротким добором. Не финальный итог. */
+  deferred?: boolean;
 }
 
 export type ProgressFn = (done: number, total: number) => Promise<void> | void;
 
-/** Дедуп внутри пачки: по url, по tg_file_unique_id, по нормализованному тексту. */
-export function dedupeDrafts(drafts: Draft[]): Draft[] {
+/**
+ * Дедуп внутри пачки: по url, по tg_file_unique_id, по нормализованному тексту. Возвращает уникальные
+ * (`kept`) и схлопнутые повторы (`dupes`) — последние идут в отчёт. Пустой текстовый ключ (`t:`) —
+ * просто пропуск (это мусор, а не дубль).
+ */
+export function dedupeDrafts(drafts: Draft[]): { kept: Draft[]; dupes: Draft[] } {
   const seen = new Set<string>();
-  const out: Draft[] = [];
+  const kept: Draft[] = [];
+  const dupes: Draft[] = [];
   for (const d of drafts) {
     const key = d.url ? `u:${d.url}` : d.tgFileUniqueId ? `f:${d.tgFileUniqueId}` : `t:${textKey(d.rawText)}`;
-    if (key === 't:' || seen.has(key)) continue;
+    if (key === 't:') continue;
+    if (seen.has(key)) {
+      dupes.push(d);
+      continue;
+    }
     seen.add(key);
-    out.push(d);
+    kept.push(d);
   }
-  return out;
+  return { kept, dupes };
+}
+
+/**
+ * Выкинуть осколки уже-постнутых альбомов: image-черновик, чей media_group уже стал постом (в прошлой
+ * волне/флаше член-с-подписью сохранён), — это «потерянное» фото поста, его НЕ кладём отдельной картинкой.
+ * Чистая функция (postedGids — результат groupsAlreadyPosted), тестируется как dedupeDrafts.
+ */
+export function dropPostedStragglers(drafts: Draft[], postedGids: Set<string>): Draft[] {
+  return drafts.filter((d) => !(d.type === 'image' && d.mediaGroupId && postedGids.has(d.mediaGroupId)));
+}
+
+/** Короткое имя черновика для отчёта о дублях (заголовок → начало текста → url). Аналог itemDisplayName. */
+export function draftDisplayName(d: Draft): string {
+  return d.title?.trim() || d.rawText?.trim().slice(0, 60) || d.url || 'без названия';
 }
 
 const EMOJI_PUNCT_ONLY = /^[\p{Emoji}\p{P}\s\d]*$/u;
@@ -128,27 +164,54 @@ async function mapLimit<T, R>(items: T[], limit: number, fn: (it: T) => Promise<
 export async function batchIngest(userId: number, drafts: Draft[], onProgress?: ProgressFn): Promise<BatchResult> {
   const total = drafts.length;
   let pool = drafts;
+
+  // Дроп осколков уже-постнутых альбомов ДО дедупа/шумоотсева: иначе одно фото поста, чей член-с-подписью
+  // обработан в прошлой волне, уехало бы отдельной картинкой на полку (прод-баг «3 по темам + 1 картинок»).
+  const strayGids = [
+    ...new Set(pool.filter((d) => d.type === 'image' && d.mediaGroupId).map((d) => d.mediaGroupId!)),
+  ];
+  if (strayGids.length > 0) {
+    const posted = await groupsAlreadyPosted(userId, strayGids);
+    if (posted.size > 0) pool = dropPostedStragglers(pool, posted);
+  }
+
   if (pool.length > MAX_ITEMS) {
     console.warn(`batchIngest: пачка ${pool.length} > MAX_ITEMS ${MAX_ITEMS}, беру первые ${MAX_ITEMS}`);
     pool = pool.slice(0, MAX_ITEMS);
   }
 
-  pool = dedupeDrafts(pool);
+  const dedup = dedupeDrafts(pool);
+  pool = dedup.kept;
+  // Сэмплы имён для отчёта (счётчики — точные, сэмпл обрезаем для UI).
+  const inBatchDupeCount = dedup.dupes.length;
+  const inBatchDupes = dedup.dupes.slice(0, DUPE_SAMPLE_CAP).map(draftDisplayName);
+
   const existing = await existingDedupKeys(userId);
+  const existingDupesDrafts: Draft[] = [];
   // Сверка с БД по той же приоритетности, что dedupeDrafts: url → file → текст. Текст-сверка делает
-  // повторный залив тех же постов-без-ссылки идемпотентным (раньше задваивались).
+  // повторный залив тех же постов-без-ссылки идемпотентным (раньше задваивались). Попавшие в БД — в отчёт.
   pool = pool.filter((d) => {
-    if (d.url) return !existing.urls.has(d.url);
-    if (d.tgFileUniqueId) return !existing.fileUids.has(d.tgFileUniqueId);
-    const t = textKey(d.rawText);
-    return !(t && existing.texts.has(t));
+    const isDup = d.url
+      ? existing.urls.has(d.url)
+      : d.tgFileUniqueId
+        ? existing.fileUids.has(d.tgFileUniqueId)
+        : (() => {
+            const t = textKey(d.rawText);
+            return Boolean(t && existing.texts.has(t));
+          })();
+    if (isDup) existingDupesDrafts.push(d);
+    return !isDup;
   });
   pool = pool.filter((d) => !isNoise(d));
+
+  const existingDupeCount = existingDupesDrafts.length;
+  const existingDupes = existingDupesDrafts.slice(0, DUPE_SAMPLE_CAP).map(draftDisplayName);
+  const dupeInfo = { existingDupes, inBatchDupes, existingDupeCount, inBatchDupeCount };
 
   const skipped = total - pool.length;
   if (pool.length === 0) {
     const totalClusters = (await listClusters(userId)).length;
-    return { saved: 0, images: 0, skipped, totalClusters };
+    return { saved: 0, images: 0, skipped, totalClusters, ...dupeInfo };
   }
 
   // Эмбеддинги считаем ДО вставки: это самый дорогой и сетевой шаг (OpenAI через VPN нестабилен).
@@ -189,7 +252,7 @@ export async function batchIngest(userId: number, drafts: Draft[], onProgress?: 
   if (pool.length === 0) {
     // Лимит исчерпан на первом же чанке — ничего не векторизовали, вставлять нечего.
     const totalClusters = (await listClusters(userId)).length;
-    return { saved: 0, images: 0, skipped, totalClusters, stoppedForBudget };
+    return { saved: 0, images: 0, skipped, totalClusters, stoppedForBudget, ...dupeInfo };
   }
 
   // Вставка с уже готовым эмбеддингом одним полем (indexedAt — раз вектор есть, L2 для текста не нужен).
@@ -204,6 +267,7 @@ export async function batchIngest(userId: number, drafts: Draft[], onProgress?: 
     title: d.title,
     tgFileId: d.tgFileId,
     tgFileUniqueId: d.tgFileUniqueId,
+    mediaGroupId: d.mediaGroupId,
     embedding: embByIndex[idx],
     indexedAt: embByIndex[idx] ? now : null,
   }));
@@ -218,7 +282,7 @@ export async function batchIngest(userId: number, drafts: Draft[], onProgress?: 
 
   // Картинки — на единую полку «Изображения» (§3.4), без тематического дробления.
   const imageItems = inserted.filter((it) => it.type === 'image');
-  await assignImages(userId, imageItems, embByItem);
+  await assignImages(userId, imageItems);
 
   // Остальное с эмбеддингом — батч-кластеризация по темам.
   const points: ClusterPoint[] = inserted
@@ -234,33 +298,20 @@ export async function batchIngest(userId: number, drafts: Draft[], onProgress?: 
   }
 
   const totalClusters = (await listClusters(userId)).length;
-  return { saved: inserted.length, images: imageItems.length, skipped, totalClusters, stoppedForBudget };
+  return { saved: inserted.length, images: imageItems.length, skipped, totalClusters, stoppedForBudget, ...dupeInfo };
 }
 
-/** Все картинки пачки → полка «Изображения» (find-or-create), один UPDATE + обновление центроида. */
-async function assignImages(userId: number, imageItems: Item[], embByItem: Map<string, number[]>): Promise<void> {
+/** Все картинки пачки → полка «Изображения» (find-or-create), один UPDATE + пересчёт статистики. */
+async function assignImages(userId: number, imageItems: Item[]): Promise<void> {
   if (imageItems.length === 0) return;
-  const embs = imageItems.map((it) => embByItem.get(it.id)).filter((e): e is number[] => Boolean(e));
-
+  const ids = imageItems.map((it) => it.id);
   const shelf = (await listClusters(userId)).find((c) => c.name === IMAGE_SHELF);
-  const meanEmb = embs.length > 0 ? mean(embs) : null;
-
-  if (!shelf) {
-    const created = await createCluster(userId, IMAGE_SHELF, meanEmb);
-    await assignItemsToCluster(imageItems.map((it) => it.id), created.id);
-    // Центроид обновляем ТОЛЬКО при наличии эмбеддингов: на заливке картинки обычно без подписи
-    // (эмбеддинга ещё нет — OCR в фоне позже), meanEmb=null → запись [] в vector(1536) роняет
-    // весь флаш. Null-центроид на полке безвреден: поиск — по эмбеддингам item, в тематическую
-    // кластеризацию полка не входит.
-    if (meanEmb) await updateCentroid(created.id, meanEmb, imageItems.length);
-    return;
-  }
-  await assignItemsToCluster(imageItems.map((it) => it.id), shelf.id);
-  const nextCentroid =
-    shelf.centroid && meanEmb
-      ? blendCentroid(shelf.centroid as number[], shelf.size, meanEmb, embs.length)
-      : ((shelf.centroid as number[] | null) ?? meanEmb);
-  if (nextCentroid) await updateCentroid(shelf.id, nextCentroid, shelf.size + imageItems.length);
+  const clusterId = shelf ? shelf.id : (await createCluster(userId, IMAGE_SHELF, null)).id;
+  await assignItemsToCluster(ids, clusterId);
+  // Центроид/size — от истины: среднее по фактическим эмбеддингам полки. На заливке картинки обычно
+  // без подписи (эмбеддинг появится позже из OCR), тогда avg → NULL: null-центроид на полке безвреден
+  // (поиск — по эмбеддингам item, в тематическую кластеризацию полка не входит).
+  await recomputeClusterStats(clusterId);
 }
 
 /** Батч-кластеризация тематических записей с подгрузкой существующих кластеров как стартовых центроидов. */
@@ -270,18 +321,13 @@ async function clusterThematic(userId: number, points: ClusterPoint[]): Promise<
   const seeds: SeedCluster[] = (await listClusters(userId))
     .filter((c) => c.name !== IMAGE_SHELF && c.centroid)
     .map((c) => ({ id: c.id, centroid: c.centroid as number[], size: c.size }));
-  const seedById = new Map(seeds.map((s) => [s.id, s]));
 
   const plan = clusterEmbeddings(seeds, points);
 
-  // Дозаливаем в существующие кластеры.
+  // Дозаливаем в существующие кластеры; центроид/size — пересчётом от истины (один на кластер).
   for (const a of plan.toExisting) {
     await assignItemsToCluster(a.itemIds, a.clusterId);
-    const seed = seedById.get(a.clusterId);
-    if (seed) {
-      const next = blendCentroid(seed.centroid, seed.size, a.addedCentroid, a.addedCount);
-      await updateCentroid(a.clusterId, next, seed.size + a.addedCount);
-    }
+    await recomputeClusterStats(a.clusterId);
   }
 
   // Новые группы: нейминг (параллельно), затем создание/мерж по имени.
@@ -292,21 +338,11 @@ async function clusterThematic(userId: number, points: ClusterPoint[]): Promise<
     const byName = await findClusterByNameCI(userId, name);
     if (byName) {
       await assignItemsToCluster(g.itemIds, byName.id);
-      const next = byName.centroid
-        ? blendCentroid(byName.centroid as number[], byName.size, g.centroid, g.size)
-        : g.centroid;
-      await updateCentroid(byName.id, next, byName.size + g.size);
+      await recomputeClusterStats(byName.id);
     } else {
       const created = await createCluster(userId, name, g.centroid);
       await assignItemsToCluster(g.itemIds, created.id);
-      await updateCentroid(created.id, g.centroid, g.size);
+      await recomputeClusterStats(created.id);
     }
   }
-}
-
-function mean(vecs: number[][]): number[] {
-  const dim = vecs[0]!.length;
-  const acc = new Array<number>(dim).fill(0);
-  for (const v of vecs) for (let i = 0; i < dim; i++) acc[i]! += v[i]!;
-  return acc.map((x) => x / vecs.length);
 }

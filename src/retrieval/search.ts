@@ -137,3 +137,16 @@ export async function listByFilter(userId: number, opts: ListFilter = {}): Promi
     .orderBy(desc(items.createdAt))
     .limit(limit);
 }
+
+/**
+ * Записи КОНКРЕТНОГО кластера (для «Свести «тему»» — синтез по реальному содержимому темы, а не
+ * перезапрос по имени). Только проиндексированные (есть embedding → есть что сводить), новые сверху.
+ */
+export async function listClusterItems(userId: number, clusterId: string, limit = 8): Promise<Item[]> {
+  return db
+    .select()
+    .from(items)
+    .where(and(eq(items.userId, userId), eq(items.clusterId, clusterId), isNotNull(items.embedding)))
+    .orderBy(desc(items.createdAt))
+    .limit(limit);
+}

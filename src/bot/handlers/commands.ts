@@ -1,16 +1,18 @@
 import { InlineKeyboard, type Bot } from 'grammy';
 import { buildDigest } from '../../retrieval/digest.js';
 import { getProactiveMode } from '../../db/users.js';
-import { searchReplyKeyboard } from './search.js';
 import { startImport } from '../../import/burst.js';
-import { checkUserBudget, formatResetUtc } from '../../ai/usage.js';
 
 const START_TEXT = [
-  '🪃 *Boomerang* — как «Избранное», только умное.',
+  '*Boomerang* — как «Избранное», только умное.',
   '',
-  'Пересылай мне статьи, посты, картинки и документы — ничего не нужно тегировать.',
-  'Сам разложу их по полкам, а когда понадобится — нажми «🔍 Найти» (или `/find`): не отдам списком, ' +
-    'а соберу связный ответ со ссылками.',
+  'Пересылай мне статьи, посты, картинки и документы — без тегов и папок. Сам разложу по полкам, ' +
+    'а когда понадобится — соберу связный ответ со ссылками («🔍 Найти» или `/find`).',
+  '',
+  '*С чего начать — закинь то, что уже накопилось:*',
+  '• Нажми «Залить из Избранного» ниже и пересылай сохранённое пачками (до 100 за раз).',
+  '• Или выгрузи переписку в JSON: в Telegram Desktop открой «Избранное» → ⋮ → «Экспорт истории чата» → ' +
+    'формат *JSON*, без медиа → пришли мне готовый файл `result.json`, разберу всё разом.',
   '',
   'Команды:',
   '• /find — поиск по сохранённому (или кнопка «🔍 Найти»)',
@@ -20,9 +22,12 @@ const START_TEXT = [
   '• /settings — напоминания из архива',
 ].join('\n');
 
+/** Кнопка-CTA на приветственном экране: новичку искать нечего — предлагаем сразу залить старое. */
+const startKeyboard = new InlineKeyboard().text('Залить из Избранного', 'import:start');
+
 export function registerCommands(bot: Bot): void {
   bot.command('start', async (ctx) => {
-    await ctx.reply(START_TEXT, { parse_mode: 'Markdown', reply_markup: searchReplyKeyboard });
+    await ctx.reply(START_TEXT, { parse_mode: 'Markdown', reply_markup: startKeyboard });
   });
 
   // Режим массовой заливки: открыть сессию, в которую копятся все пересылки (см. import/burst.ts).
@@ -34,21 +39,14 @@ export function registerCommands(bot: Bot): void {
   });
 
   bot.command('digest', async (ctx) => {
-    const userId = ctx.from!.id;
-    // Бюджет-гард: персональный потолок или глобальный paused. degraded дайджест пропускает —
-    // buildDigest внутри сам уйдёт в детерминированную сводку без LLM.
-    const budget = checkUserBudget(userId);
-    if (!budget.allowed) {
-      await ctx.reply(
-        budget.reason === 'user'
-          ? `Ты исчерпал дневной лимит. Обновится в ${formatResetUtc(budget.resetsAt)}.`
-          : 'Сервис временно недоступен из-за нагрузки — попробуй позже.',
-      );
-      return;
-    }
-    await ctx.replyWithChatAction('typing').catch(() => {});
-    const text = await buildDigest(userId);
-    await ctx.reply(text.slice(0, 4096), { link_preview_options: { is_disabled: true } });
+    // Дайджест детерминированный (без LLM) — бюджет-гард не нужен. Синтез по кнопке «Свести»
+    // уважает лимиты сам внутри handleQuery.
+    const { text, keyboard } = await buildDigest(ctx.from!.id);
+    await ctx.reply(text, {
+      parse_mode: 'HTML',
+      link_preview_options: { is_disabled: true },
+      ...(keyboard ? { reply_markup: keyboard } : {}),
+    });
   });
 
   // Управление проактивными напоминаниями из архива (режим 2).
@@ -56,8 +54,8 @@ export function registerCommands(bot: Bot): void {
     const mode = await getProactiveMode(ctx.from!.id);
     const on = mode === 'on';
     const status = on
-      ? '🪃 Напоминания из архива: *включены*.\nИногда буду сам показывать связанное с тем, что ты пересылаешь.'
-      : '🪃 Напоминания из архива: *выключены*.\nМогу сам напоминать о похожем из сохранённого, когда это к месту.';
+      ? 'Напоминания из архива: *включены*.\nИногда буду сам показывать связанное с тем, что ты пересылаешь.'
+      : 'Напоминания из архива: *выключены*.\nМогу сам напоминать о похожем из сохранённого, когда это к месту.';
     const kb = new InlineKeyboard().text(
       on ? 'Выключить' : 'Включить',
       on ? 'optin:off' : 'optin:on',

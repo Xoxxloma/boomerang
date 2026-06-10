@@ -1,5 +1,5 @@
 import { InlineKeyboard, Keyboard, type Bot, type Context } from 'grammy';
-import { search, listByFilter } from '../../retrieval/search.js';
+import { search, listByFilter, type SearchHit } from '../../retrieval/search.js';
 import { parseQuery } from '../../retrieval/parseQuery.js';
 import { synthesize, extractCitedIndices, sourceName } from '../../retrieval/synthesize.js';
 import { checkUserBudget, breakerState, formatResetUtc } from '../../ai/usage.js';
@@ -101,6 +101,20 @@ export async function handleQuery(ctx: Context, query: string): Promise<void> {
     return;
   }
 
+  await respondWithSynthesis(ctx, query, hits, userId);
+}
+
+/**
+ * Связный синтез по уже найденным источникам (§6, режим 1) + кнопки процитированных источников.
+ * Общий хвост для /find (после search) и «Свести «тему»» (по записям кластера напрямую).
+ * degraded (breaker не normal) → список источников; падение LLM → список как запасной вариант.
+ */
+export async function respondWithSynthesis(
+  ctx: Context,
+  query: string,
+  hits: SearchHit[],
+  userId: number,
+): Promise<void> {
   // degraded: дорогой синтез на паузе — отдаём список источников (чтение продолжает работать).
   if (breakerState() !== 'normal') {
     await replyWithList(ctx, hits.map((h) => h.item), query);
