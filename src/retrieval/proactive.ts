@@ -5,7 +5,7 @@ import { getBotApi } from '../bot/api.js';
 import { getProactiveMode, type ProactiveMode } from '../db/users.js';
 import { getCluster, setClusterMatured } from '../db/clusters.js';
 import { findOlderSiblingInCluster } from '../db/items.js';
-import { logSurfacing, wasItemSurfacedRecently } from '../db/surfacing.js';
+import { logSurfacing, wasItemSurfacedRecently, countSurfacedToday } from '../db/surfacing.js';
 import { tuning } from '../config/tuning.js';
 
 /**
@@ -55,7 +55,8 @@ export async function maybeSurface(item: Item, result: AssignResult): Promise<vo
     if (!trigger) return;
 
     if (trigger === 'maturity') {
-      const text = `🪃 У тебя накопилось ${result.size} материалов в теме «${cluster.name}». Свести? /find ${cluster.name}`;
+      // Созревание — раз на тему, дневным лимитом НЕ режем. Кнопка «📋 Свести» вместо текста /find.
+      const text = `🪃 У тебя накопилось ${result.size} материалов в теме «${cluster.name}». Свести в один ответ?`;
       await setClusterMatured(cluster.id);
       await logSurfacing({
         userId: item.userId,
@@ -63,7 +64,7 @@ export async function maybeSurface(item: Item, result: AssignResult): Promise<vo
         clusterId: cluster.id,
         triggerItemId: item.id,
       });
-      await send(item.userId, text, null, mode);
+      await send(item.userId, text, null, mode, cluster.id);
       return;
     }
 
@@ -79,6 +80,9 @@ export async function maybeSurface(item: Item, result: AssignResult): Promise<vo
     );
     if (!old) return;
     if (await wasItemSurfacedRecently(item.userId, old.id, RESONANCE_SURFACE_COOLDOWN_DAYS)) return;
+    // Дневной лимит резонанса (анти-спам): не больше PROACTIVE_DAILY_CAP в сутки. Созревание (выше) и
+    // первый opt-in-образец не страдают (на чистом дне count=0). Maturity-сообщения тоже считаются.
+    if ((await countSurfacedToday(item.userId)) >= tuning.proactiveDailyCap) return;
 
     const text = `🪃 Кстати, по этой теме ты уже сохранял: ${titleOf(old)}`;
     await logSurfacing({
@@ -103,12 +107,19 @@ async function send(
   text: string,
   resonanceItem: Item | null,
   mode: ProactiveMode | undefined,
+  synthClusterId?: string,
 ): Promise<void> {
   const kb = new InlineKeyboard();
   let hasButtons = false;
 
   if (resonanceItem?.tgMessageId) {
     kb.text('↑ Источник', `src:${resonanceItem.id}`).row();
+    hasButtons = true;
+  }
+
+  // Созревание: кнопка сразу сводит тему в ответ (режим 1) — без ручного набора /find.
+  if (synthClusterId) {
+    kb.text('📋 Свести', `synth:${synthClusterId}`).row();
     hasButtons = true;
   }
 

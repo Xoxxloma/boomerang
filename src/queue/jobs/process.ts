@@ -39,9 +39,11 @@ export async function processItem(itemId: string, seedCategory: string): Promise
   }
 
   const indexText = buildIndexText(item).slice(0, MAX_EMBED_CHARS);
-  let emb: number[] | null = null;
-  if (indexText.trim()) {
-    emb = await embed(indexText);
+  // Идемпотентность ретрая: если вектор уже в БД (джоба упала ПОСЛЕ эмбеддинга — напр. в кластеризации
+  // / maybeSurface), НЕ зовём embed() повторно — иначе платный эмбеддинг считается дважды (бюджет-гард).
+  let emb: number[] | null = item.embedding ?? null;
+  if (!emb && indexText.trim()) {
+    emb = await embed(indexText, item.userId);
     await setEmbedding(itemId, emb);
   }
 

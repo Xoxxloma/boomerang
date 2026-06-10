@@ -11,6 +11,8 @@ import {
   vector,
   index,
   primaryKey,
+  date,
+  numeric,
 } from 'drizzle-orm/pg-core';
 
 /**
@@ -177,4 +179,23 @@ export const burstPart = pgTable(
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   },
   (t) => [index('burst_part_user_idx').on(t.userId)],
+);
+
+/**
+ * Дневной учёт LLM/эмбеддинг-расхода (бюджет-гарды). Счётчики живут в памяти (ai/usage.ts),
+ * сюда периодически флашатся и регидрируются на старте — чтобы рестарт/деплой не обнулял лимиты.
+ * userId === 0 — глобальный агрегат (tg id всегда > 0). Источник истины для дневных сумм — память;
+ * флаш перезаписывает строку целиком (upsert).
+ */
+export const usageDaily = pgTable(
+  'usage_daily',
+  {
+    userId: bigint('user_id', { mode: 'number' }).notNull(),
+    day: date('day').notNull(),
+    llmPromptTokens: bigint('llm_prompt_tokens', { mode: 'number' }).default(0).notNull(),
+    llmCompletionTokens: bigint('llm_completion_tokens', { mode: 'number' }).default(0).notNull(),
+    embeddingTokens: bigint('embedding_tokens', { mode: 'number' }).default(0).notNull(),
+    costUsd: numeric('cost_usd', { precision: 12, scale: 6 }).default('0').notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.userId, t.day] })],
 );

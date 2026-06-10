@@ -3,6 +3,7 @@ import { buildDigest } from '../../retrieval/digest.js';
 import { getProactiveMode } from '../../db/users.js';
 import { searchReplyKeyboard } from './search.js';
 import { startImport } from '../../import/burst.js';
+import { checkUserBudget, formatResetUtc } from '../../ai/usage.js';
 
 const START_TEXT = [
   '🪃 *Boomerang* — как «Избранное», только умное.',
@@ -33,8 +34,20 @@ export function registerCommands(bot: Bot): void {
   });
 
   bot.command('digest', async (ctx) => {
+    const userId = ctx.from!.id;
+    // Бюджет-гард: персональный потолок или глобальный paused. degraded дайджест пропускает —
+    // buildDigest внутри сам уйдёт в детерминированную сводку без LLM.
+    const budget = checkUserBudget(userId);
+    if (!budget.allowed) {
+      await ctx.reply(
+        budget.reason === 'user'
+          ? `Ты исчерпал дневной лимит. Обновится в ${formatResetUtc(budget.resetsAt)}.`
+          : 'Сервис временно недоступен из-за нагрузки — попробуй позже.',
+      );
+      return;
+    }
     await ctx.replyWithChatAction('typing').catch(() => {});
-    const text = await buildDigest(ctx.from!.id);
+    const text = await buildDigest(userId);
     await ctx.reply(text.slice(0, 4096), { link_preview_options: { is_disabled: true } });
   });
 

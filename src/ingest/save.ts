@@ -60,7 +60,7 @@ export async function saveItem(
   const item = await insertItem(values);
 
   // Картинки — единая полка (§3.4), без LLM-классификации. Остальное — по дешёвому сигналу.
-  const category = det.type === 'image' ? IMAGE_SHELF : await classify(item);
+  const category = det.type === 'image' ? IMAGE_SHELF : await classify(item, userId);
   // ack передаём только для одиночных пересылок — тогда L2 сможет отредактировать «Положил…» при сбое.
   await enqueueProcess(item.id, category, ack);
   return { item, category };

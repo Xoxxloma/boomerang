@@ -60,7 +60,7 @@ export async function search(
   // Эмбеддим тему + синонимы: «контра» один в один не ляжет на пост про Counter-Strike,
   // а с расширениями вектор подтягивается к нужным записям.
   const embedText = [query, ...(opts.expansions ?? [])].filter(Boolean).join(' ');
-  const queryVec = await embed(embedText);
+  const queryVec = await embed(embedText, userId);
   const similarity = sql<number>`1 - (${cosineDistance(items.embedding, queryVec)})`;
 
   const semanticRows = await db

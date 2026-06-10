@@ -13,7 +13,11 @@ let boss: PgBoss | null = null;
 /** Singleton pg-boss поверх той же Postgres (своя схема `pgboss`). */
 export function getBoss(): PgBoss {
   if (!boss) {
-    boss = new PgBoss({ connectionString: env.DATABASE_URL });
+    // pg-boss использует драйвер pg — SSL задаётся объектом (не строкой, как у postgres.js).
+    boss = new PgBoss({
+      connectionString: env.DATABASE_URL,
+      ssl: env.DATABASE_SSL ? { rejectUnauthorized: false } : undefined,
+    });
     boss.on('error', (err: unknown) => console.error('❌ pg-boss error:', err));
   }
   return boss;

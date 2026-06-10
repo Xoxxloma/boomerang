@@ -67,6 +67,8 @@ export async function parseQuery(userId: number, raw: string): Promise<ParsedQue
     const res = await chatJson<RawParse>(parseQueryPrompt(query, names), {
       system: PARSE_QUERY_SYSTEM,
       temperature: 0,
+      userId,
+      maxTokens: 256,
     });
 
     const types = asStringArray(res.types, 8).filter(

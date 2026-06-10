@@ -1,5 +1,6 @@
 import { chat } from '../ai/llm.js';
 import { SYNTHESIZE_SYSTEM, synthesizePrompt } from '../ai/prompts.js';
+import { tuning } from '../config/tuning.js';
 import type { Item } from '../db/schema.js';
 import type { SearchHit } from './search.js';
 
@@ -22,13 +23,16 @@ function snippet(it: Item): string {
  * Режим 1: собрать СВЯЗНЫЙ ответ со ссылками на источники, а не список (§6).
  * Источники нумеруются; LLM ссылается на них как [n].
  */
-export async function synthesize(question: string, hits: SearchHit[]): Promise<Synthesis> {
-  const sources = hits.map((h) => h.item);
+export async function synthesize(question: string, hits: SearchHit[], userId?: number): Promise<Synthesis> {
+  // L5: ограничиваем число источников — bound на размер промпта (и стоимость синтеза).
+  const sources = hits.slice(0, tuning.synthMaxSources).map((h) => h.item);
   const block = sources.map((it, i) => `[${i + 1}] ${snippet(it)}`).join('\n\n');
 
   const answer = await chat(synthesizePrompt(question, block), {
     system: SYNTHESIZE_SYSTEM,
     temperature: 0.3,
+    userId,
+    maxTokens: tuning.synthMaxTokens,
   });
 
   return { answer, sources };

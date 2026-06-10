@@ -10,7 +10,11 @@ import { z } from 'zod';
 const raw = {
   BOT_TOKEN: process.env.BOT_TOKEN,
   DATABASE_URL: process.env.DATABASE_URL,
+  // Включать SSL для подключения к БД (облако: Neon/Supabase требуют). Локальный docker — без SSL.
+  DATABASE_SSL: process.env.DATABASE_SSL,
   OPENAI_API_KEY: process.env.OPENAI_API_KEY,
+  // Кому слать алерты о критичных сбоях (бюджет-гард ослеп, регидрация упала). CSV из tg-id. Пусто → молчим.
+  ADMIN_IDS: process.env.ADMIN_IDS,
 
   LLM_API_KEY: process.env.LLM_API_KEY || process.env.OPENAI_API_KEY,
   LLM_BASE_URL: process.env.LLM_BASE_URL || 'https://api.openai.com/v1',
@@ -24,6 +28,11 @@ const raw = {
 const schema = z.object({
   BOT_TOKEN: z.string().min(1, 'BOT_TOKEN обязателен (получить у @BotFather)'),
   DATABASE_URL: z.string().min(1, 'DATABASE_URL обязателен'),
+  DATABASE_SSL: z
+    .string()
+    .optional()
+    .default('false')
+    .transform((v) => v === 'true'),
 
   LLM_API_KEY: z.string().min(1, 'LLM_API_KEY или OPENAI_API_KEY обязателен'),
   LLM_BASE_URL: z.string().url(),
@@ -32,6 +41,18 @@ const schema = z.object({
   EMBEDDING_API_KEY: z.string().min(1, 'EMBEDDING_API_KEY или OPENAI_API_KEY обязателен'),
   EMBEDDING_BASE_URL: z.string().url(),
   EMBEDDING_MODEL: z.string().min(1),
+
+  // Опционально: список tg-id админов через запятую для алертов. Пусто/не задано → [] (алерты молчат).
+  ADMIN_IDS: z
+    .string()
+    .optional()
+    .default('')
+    .transform((s) =>
+      s
+        .split(',')
+        .map((x) => Number(x.trim()))
+        .filter((n) => Number.isFinite(n) && n > 0),
+    ),
 });
 
 const parsed = schema.safeParse(raw);

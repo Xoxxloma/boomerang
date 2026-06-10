@@ -10,6 +10,8 @@ import {
 } from '../db/clusters.js';
 import { embedBatch } from '../ai/embeddings.js';
 import { chatJson } from '../ai/llm.js';
+import { breakerState } from '../ai/usage.js';
+import { QuotaExceededError, BudgetExhaustedError } from '../ai/errors.js';
 import { CLUSTER_NAME_SYSTEM, clusterNamePrompt } from '../ai/prompts.js';
 import { buildIndexText, type Indexable } from '../ingest/extract.js';
 import { IMAGE_SHELF } from '../cluster/assign.js';
@@ -33,6 +35,12 @@ export interface BatchResult {
   images: number;
   skipped: number;
   totalClusters: number;
+  /**
+   * Заливка остановлена на дневном лимите расхода: уже векторизованное вставлено, остаток пула —
+   * НЕ обработан и оставлен в буфере (дольётся после сброса лимита). Сигнал для flushBurst не закрывать
+   * сессию и не удалять буфер. См. § бюджет-ядро.
+   */
+  stoppedForBudget?: boolean;
 }
 
 export type ProgressFn = (done: number, total: number) => Promise<void> | void;
@@ -79,13 +87,17 @@ function draftIndexable(d: Draft): Indexable {
   };
 }
 
-/** Имя кластера по образцам (1 LLM-вызов). Фолбэк — «Разное». */
-async function nameCluster(samples: string[]): Promise<string> {
+/** Имя кластера по образцам (1 LLM-вызов). Фолбэк — «Разное». В degraded/paused LLM не зовём. */
+async function nameCluster(samples: string[], userId: number): Promise<string> {
   if (samples.length === 0) return 'Разное';
+  // Дорогая генерация: в degraded/paused пропускаем LLM, новый кластер получает нейтральное имя.
+  if (breakerState() !== 'normal') return 'Разное';
   try {
     const { category } = await chatJson<{ category: string }>(clusterNamePrompt(samples), {
       system: CLUSTER_NAME_SYSTEM,
       temperature: 0,
+      userId,
+      maxTokens: 64,
     });
     const cleaned = category?.trim();
     return cleaned && cleaned.length <= 40 ? cleaned : 'Разное';
@@ -143,19 +155,41 @@ export async function batchIngest(userId: number, drafts: Draft[], onProgress?: 
   // Если он упадёт — в БД ещё ничего не записано, ретрай чист и не остаётся items-сирот без вектора.
   const embByIndex: (number[] | null)[] = new Array(pool.length).fill(null);
   let done = 0;
+  let stoppedForBudget = false;
+  let processedCount = pool.length; // сколько записей пула успели векторизовать (для обрезки при стопе)
   for (let i = 0; i < pool.length; i += EMBED_BATCH) {
     const chunk = pool.slice(i, i + EMBED_BATCH);
     const withText = chunk
       .map((d, j) => ({ idx: i + j, text: buildIndexText(draftIndexable(d)).slice(0, MAX_EMBED_CHARS) }))
       .filter((x) => x.text.trim());
     if (withText.length > 0) {
-      const vecs = await embedBatch(withText.map((x) => x.text));
-      withText.forEach((x, k) => {
-        embByIndex[x.idx] = vecs[k]!;
-      });
+      try {
+        const vecs = await embedBatch(withText.map((x) => x.text), userId);
+        withText.forEach((x, k) => {
+          embByIndex[x.idx] = vecs[k]!;
+        });
+      } catch (err) {
+        // Бюджет исчерпан посреди заливки: НЕ теряем уже посчитанное и НЕ платим за выброшенное.
+        // Обрезаем пул до полностью векторизованных чанков [0, i), вставляем их; остаток остаётся в
+        // буфере (flushBurst его не удалит) — дольём после сброса лимита, дедуп не даст переэмбеддить.
+        // Прочие сбои (сеть/API) пробрасываем как раньше: в БД ещё пусто, ретрай чист.
+        if (err instanceof QuotaExceededError || err instanceof BudgetExhaustedError) {
+          stoppedForBudget = true;
+          processedCount = i;
+          break;
+        }
+        throw err;
+      }
     }
     done += chunk.length;
     await onProgress?.(done, pool.length);
+  }
+
+  if (processedCount < pool.length) pool = pool.slice(0, processedCount);
+  if (pool.length === 0) {
+    // Лимит исчерпан на первом же чанке — ничего не векторизовали, вставлять нечего.
+    const totalClusters = (await listClusters(userId)).length;
+    return { saved: 0, images: 0, skipped, totalClusters, stoppedForBudget };
   }
 
   // Вставка с уже готовым эмбеддингом одним полем (indexedAt — раз вектор есть, L2 для текста не нужен).
@@ -200,7 +234,7 @@ export async function batchIngest(userId: number, drafts: Draft[], onProgress?: 
   }
 
   const totalClusters = (await listClusters(userId)).length;
-  return { saved: inserted.length, images: imageItems.length, skipped, totalClusters };
+  return { saved: inserted.length, images: imageItems.length, skipped, totalClusters, stoppedForBudget };
 }
 
 /** Все картинки пачки → полка «Изображения» (find-or-create), один UPDATE + обновление центроида. */
@@ -251,7 +285,7 @@ async function clusterThematic(userId: number, points: ClusterPoint[]): Promise<
   }
 
   // Новые группы: нейминг (параллельно), затем создание/мерж по имени.
-  const names = await mapLimit(plan.newGroups, NAME_CONCURRENCY, (g) => nameCluster(g.sampleTexts));
+  const names = await mapLimit(plan.newGroups, NAME_CONCURRENCY, (g) => nameCluster(g.sampleTexts, userId));
   for (let i = 0; i < plan.newGroups.length; i++) {
     const g = plan.newGroups[i]!;
     const name = names[i]!;

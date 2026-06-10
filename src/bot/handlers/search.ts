@@ -2,6 +2,7 @@ import { InlineKeyboard, Keyboard, type Bot, type Context } from 'grammy';
 import { search, listByFilter } from '../../retrieval/search.js';
 import { parseQuery } from '../../retrieval/parseQuery.js';
 import { synthesize, extractCitedIndices, sourceName } from '../../retrieval/synthesize.js';
+import { checkUserBudget, breakerState, formatResetUtc } from '../../ai/usage.js';
 import type { Item } from '../../db/schema.js';
 
 /** Текст приглашения к поиску — по нему же ловим ответ (эту строку шлёт только бот). */
@@ -31,10 +32,22 @@ async function replyWithList(ctx: Context, list: Item[], query: string): Promise
   });
 }
 
-async function handleQuery(ctx: Context, query: string): Promise<void> {
+export async function handleQuery(ctx: Context, query: string): Promise<void> {
   await ctx.replyWithChatAction('typing').catch(() => {});
   const userId = ctx.from?.id;
   if (!userId) return;
+
+  // Бюджет-гард (пре-чек): персональный потолок или глобальный paused — чистое сообщение,
+  // не тратя даже эмбеддинг. degraded чтение пропускает (синтез ниже сам уйдёт в список).
+  const budget = checkUserBudget(userId);
+  if (!budget.allowed) {
+    await ctx.reply(
+      budget.reason === 'user'
+        ? `Ты исчерпал дневной лимит запросов. Обновится в ${formatResetUtc(budget.resetsAt)}.`
+        : 'Поиск временно недоступен из-за нагрузки — попробуй позже.',
+    );
+    return;
+  }
 
   // Разбор запроса: фильтры (тип/время) + синонимы + категории. Сам fail-safe, но подстрахуемся.
   let parsed;
@@ -88,10 +101,16 @@ async function handleQuery(ctx: Context, query: string): Promise<void> {
     return;
   }
 
+  // degraded: дорогой синтез на паузе — отдаём список источников (чтение продолжает работать).
+  if (breakerState() !== 'normal') {
+    await replyWithList(ctx, hits.map((h) => h.item), query);
+    return;
+  }
+
   let answer: string;
   let sources;
   try {
-    ({ answer, sources } = await synthesize(query, hits));
+    ({ answer, sources } = await synthesize(query, hits, userId));
   } catch (err) {
     // Синтез (LLM) упал — нашли, но не свели. Покажем хотя бы источники, а не пустоту.
     console.error('synthesize error:', err);

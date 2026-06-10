@@ -13,7 +13,12 @@ import postgres from 'postgres';
 async function main() {
   const url = process.env.DATABASE_URL;
   if (!url) throw new Error('DATABASE_URL не задан');
-  const sql = postgres(url, { max: 1 });
+  // SSL включаем по тому же флагу, что и основной пул (см. config/env.ts), но читаем
+  // напрямую из process.env — скрипт намеренно не тащит полную валидацию env.
+  const sql = postgres(url, {
+    max: 1,
+    ssl: process.env.DATABASE_SSL === 'true' ? 'require' : false,
+  });
   try {
     await sql`CREATE EXTENSION IF NOT EXISTS vector`;
     const db = drizzle(sql);

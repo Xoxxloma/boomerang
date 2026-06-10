@@ -3,6 +3,7 @@ import { getItem, deleteItem, itemDisplayName } from '../../db/items.js';
 import { enqueueProcess } from '../../queue/index.js';
 import { IMAGE_SHELF } from '../../cluster/assign.js';
 import { classify } from '../../ingest/classify.js';
+import { handleQuery } from './search.js';
 import {
   assignItemCluster,
   createCluster,
@@ -14,7 +15,7 @@ import {
 import { updatedCentroid } from '../../cluster/math.js';
 import { setEditPending, getEditPending, delEditPending } from '../../db/sessions.js';
 import { setProactiveMode } from '../../db/users.js';
-import { flushBurst } from '../../import/burst.js';
+import { flushBurst, doneKeyboard } from '../../import/burst.js';
 import type { Item } from '../../db/schema.js';
 
 /**
@@ -176,6 +177,18 @@ export function registerCallbacks(bot: Bot): void {
     await ctx.answerCallbackQuery({ text: 'Ок, не буду напоминать' });
   });
 
+  // «📋 Свести» из сообщения о созревании темы (режим 2) → синтез по теме через обычный путь поиска
+  // (handleQuery сам уважает бюджет-гард, degraded-фоллбэк и шлёт ответ со ссылками на источники).
+  bot.callbackQuery(/^synth:(.+)$/, async (ctx) => {
+    const clusterId = ctx.match[1]!;
+    const cluster = await getCluster(clusterId);
+    if (!cluster || cluster.userId !== ctx.from.id) {
+      return ctx.answerCallbackQuery({ text: 'Тема не найдена', show_alert: true });
+    }
+    await ctx.answerCallbackQuery({ text: 'Свожу…' });
+    await handleQuery(ctx, cluster.name);
+  });
+
   // «Повторить» из сообщения о сбое индексации — перезапуск L2 для КОНКРЕТНОЙ записи (это сообщение).
   // Категорию L1 не персистим → восстанавливаем классификацией (картинкам — полка). notifyOnSuccess:
   // при успехе воркер обновит это же сообщение на «доиндексировал».
@@ -187,7 +200,7 @@ export function registerCallbacks(bot: Bot): void {
     }
     const msg = ctx.callbackQuery.message;
     const ack = msg ? { chatId: msg.chat.id, messageId: msg.message_id } : undefined;
-    const seed = item.type === 'image' ? IMAGE_SHELF : await classify(item);
+    const seed = item.type === 'image' ? IMAGE_SHELF : await classify(item, item.userId);
     await enqueueProcess(itemId, seed, ack, true);
     await ctx.editMessageText(`🔄 Повторяю «${itemDisplayName(item)}»…`).catch(() => {});
     await ctx.answerCallbackQuery({ text: 'Повторяю…' });
@@ -242,7 +255,20 @@ export function registerCallbacks(bot: Bot): void {
   // «Готово» под прогрессом заливки → немедленный флаш буфера. flushBurst сам правит прогресс на итог.
   bot.callbackQuery('import:done', async (ctx) => {
     await ctx.answerCallbackQuery({ text: 'Собираю заливку…' });
-    const res = await flushBurst(ctx.api, ctx.from.id);
+    let res;
+    try {
+      res = await flushBurst(ctx.api, ctx.from.id);
+    } catch (err) {
+      // Бюджет-стоп flushBurst обрабатывает сам (правит прогресс-сообщение). Сюда долетают лишь прочие
+      // сбои (сеть/API): буфер и сессия сохранены — сообщаем без грязного отказа и оставляем кнопку повтора.
+      console.error('import flush error:', err);
+      await ctx
+        .editMessageText('Не получилось долить сейчас — буфер сохранён, нажми «Готово» ещё раз чуть позже.', {
+          reply_markup: doneKeyboard(),
+        })
+        .catch(() => {});
+      return;
+    }
     if (!res) {
       // Буфер пуст (ничего не переслал или уже флашнули по простою) — убираем кнопку.
       await ctx

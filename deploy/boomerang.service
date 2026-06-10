@@ -1,0 +1,33 @@
+# systemd unit для Boomerang (long-polling Telegram-бот).
+# Установка:
+#   sudo cp deploy/boomerang.service /etc/systemd/system/boomerang.service
+#   # подставить User / WorkingDirectory / путь к npm под свой стенд (см. ниже)
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now boomerang
+#
+# Подставить под свой стенд:
+#   User              — деплой-пользователь, владелец рабочей папки (НЕ root без нужды)
+#   WorkingDirectory  — папка с кодом; .env.production читается отсюда
+#   ExecStart         — абсолютный путь к npm: проверь `which npm`
+#                       (Node из nodesource → /usr/bin/npm; при nvm укажи путь nvm-бина
+#                        или добавь строку Environment=PATH=/home/<user>/.nvm/versions/node/<ver>/bin:/usr/bin:/bin)
+
+[Unit]
+Description=Boomerang Telegram bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=CHANGE_ME
+WorkingDirectory=/opt/boomerang
+# Приложение само грузит .env.production из WorkingDirectory (см. скрипт start:prod в package.json).
+ExecStart=/usr/bin/npm run start:prod
+Restart=on-failure
+RestartSec=5
+# Graceful shutdown: в коде есть обработчик SIGTERM (флаш учёта, слив очереди pg-boss).
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

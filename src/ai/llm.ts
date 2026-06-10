@@ -1,5 +1,8 @@
 import OpenAI from 'openai';
 import { env } from '../config/env.js';
+import { tuning } from '../config/tuning.js';
+import { enforce, recordUsage } from './usage.js';
+import { alertIfUsageMissing } from '../bot/alerts.js';
 
 /**
  * LLM-клиент на OpenAI SDK. В v0.1 — OpenAI gpt-4o-mini.
@@ -15,10 +18,17 @@ export interface ChatOptions {
   temperature?: number;
   /** Запросить строгий JSON-объект в ответе. */
   json?: boolean;
+  /** Кому отнести расход (бюджет-гарды): персональный потолок + атрибуция стоимости. */
+  userId?: number;
+  /** Потолок выходных токенов (worst-case bound). Нет — дефолт из tuning. */
+  maxTokens?: number;
 }
 
 /** Однократный chat-вызов, возвращает текст ответа. */
 export async function chat(prompt: string, opts: ChatOptions = {}): Promise<string> {
+  // Бюджет-гард ДО обращения к API: paused → стоп всему, персональный потолок → стоп юзеру.
+  enforce(opts.userId ?? null);
+
   const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [];
   if (opts.system) messages.push({ role: 'system', content: opts.system });
   messages.push({ role: 'user', content: prompt });
@@ -27,8 +37,15 @@ export async function chat(prompt: string, opts: ChatOptions = {}): Promise<stri
     model: env.LLM_MODEL,
     messages,
     temperature: opts.temperature ?? 0.3,
+    max_tokens: opts.maxTokens ?? tuning.llmMaxTokensDefault,
     ...(opts.json ? { response_format: { type: 'json_object' } } : {}),
   });
+
+  const promptTokens = res.usage?.prompt_tokens ?? 0;
+  const completionTokens = res.usage?.completion_tokens ?? 0;
+  recordUsage(opts.userId ?? null, 'llm', promptTokens, completionTokens);
+  // Нет usage → учёт ослеп. На нормальном пути (usage есть) выходит мгновенно, латентности не добавляет.
+  await alertIfUsageMissing('llm', promptTokens, completionTokens);
 
   return res.choices[0]?.message?.content?.trim() ?? '';
 }

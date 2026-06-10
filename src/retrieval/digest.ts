@@ -2,6 +2,8 @@ import { and, desc, eq, gt, sql } from 'drizzle-orm';
 import { db } from '../db/client.js';
 import { items, clusters, type Item } from '../db/schema.js';
 import { chat } from '../ai/llm.js';
+import { breakerState } from '../ai/usage.js';
+import { tuning } from '../config/tuning.js';
 import { DIGEST_SYSTEM, digestPrompt } from '../ai/prompts.js';
 
 interface Theme {
@@ -45,14 +47,19 @@ export async function buildDigest(userId: number, days = 7): Promise<string> {
     .map((t) => `• ${t.name} (${t.count}): ${t.examples.join('; ')}`)
     .join('\n');
 
-  try {
-    const text = await chat(digestPrompt(themesBlock, days, rows.length), {
-      system: DIGEST_SYSTEM,
-      temperature: 0.5,
-    });
-    if (text.trim()) return text.trim();
-  } catch (err) {
-    console.error('digest LLM error:', err);
+  // Дорогая генерация: в degraded/paused пропускаем LLM и отдаём детерминированную сводку.
+  if (breakerState() === 'normal') {
+    try {
+      const text = await chat(digestPrompt(themesBlock, days, rows.length), {
+        system: DIGEST_SYSTEM,
+        temperature: 0.5,
+        userId,
+        maxTokens: tuning.digestMaxTokens,
+      });
+      if (text.trim()) return text.trim();
+    } catch (err) {
+      console.error('digest LLM error:', err);
+    }
   }
 
   // Фолбэк без LLM — детерминированная сводка.

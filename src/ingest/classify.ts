@@ -7,7 +7,7 @@ import { buildClassifySignal, type Indexable } from './extract.js';
  * Это «ощущение порядка» для человека, НЕ механизм поиска (поиск — по эмбеддингам).
  * В вехе 4 поверх этого появятся кластеры; промах тут не критичен.
  */
-export async function classify(it: Indexable): Promise<string> {
+export async function classify(it: Indexable, userId: number): Promise<string> {
   const signal = buildClassifySignal(it);
   if (!signal.trim()) return 'Разное';
 
@@ -15,6 +15,8 @@ export async function classify(it: Indexable): Promise<string> {
     const { category } = await chatJson<{ category: string }>(classifyPrompt(signal), {
       system: CLASSIFY_SYSTEM,
       temperature: 0,
+      userId,
+      maxTokens: 64,
     });
     const cleaned = category?.trim();
     return cleaned && cleaned.length <= 40 ? cleaned : 'Разное';

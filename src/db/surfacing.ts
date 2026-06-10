@@ -23,6 +23,20 @@ export async function logSurfacing(input: LogSurfacingInput): Promise<void> {
   });
 }
 
+/** Сколько проактивных всплытий (любого вида) показано юзеру сегодня (UTC) — для дневного лимита. */
+export async function countSurfacedToday(userId: number): Promise<number> {
+  const [row] = await db
+    .select({ n: sql<number>`count(*)::int` })
+    .from(surfacingLog)
+    .where(
+      and(
+        eq(surfacingLog.userId, userId),
+        gt(surfacingLog.createdAt, sql`date_trunc('day', now())`),
+      ),
+    );
+  return row?.n ?? 0;
+}
+
 /** Показывали ли этот item проактивно за последние `days` дней (дедуп резонанса). */
 export async function wasItemSurfacedRecently(
   userId: number,

@@ -6,6 +6,8 @@ import { flushAlbum } from '../ingest/album.js';
 import { flushBurst } from '../import/burst.js';
 import { getItem, itemDisplayName } from '../db/items.js';
 import { getBotApi } from '../bot/api.js';
+import { QuotaExceededError, BudgetExhaustedError } from '../ai/errors.js';
+import { formatResetUtc } from '../ai/usage.js';
 
 /**
  * Регистрирует воркеры L2. Живут в процессе бота: флаш альбома использует Telegram API (getBotApi).
@@ -19,6 +21,29 @@ export async function startWorkers(): Promise<void> {
       try {
         await processItem(job.data.itemId, job.data.seedCategory);
       } catch (err) {
+        // Бюджет-гард: персональный потолок / глобальный paused. Ретраить бессмысленно (лимит за
+        // ~25с не уйдёт), DLQ дал бы обезличенный «сбой». Правим сообщение точным текстом и НЕ
+        // пробрасываем: item остаётся indexedAt=null → переиндексируется кнопкой/reindex после сброса.
+        if (err instanceof QuotaExceededError || err instanceof BudgetExhaustedError) {
+          const { itemId, seedCategory, ack } = job.data;
+          if (ack) {
+            const item = await getItem(itemId);
+            if (item) {
+              const name = itemDisplayName(item);
+              const kb = new InlineKeyboard().text('🔄 Повторить', `reidx:${itemId}`);
+              const text =
+                err instanceof QuotaExceededError
+                  ? `⚠️ «${name}» — сохранил в «${seedCategory}», но твой дневной лимит исчерпан. ` +
+                    `Проиндексирую после ${formatResetUtc(err.resetsAt)}.`
+                  : `⚠️ «${name}» — сохранил в «${seedCategory}», но сервис под повышенной нагрузкой. ` +
+                    `Проиндексирую чуть позже.`;
+              await getBotApi()
+                .editMessageText(ack.chatId, ack.messageId, text, { reply_markup: kb })
+                .catch(() => {});
+            }
+          }
+          continue;
+        }
         // Логируем с itemId (глобальный хендлер pg-boss его не знает) и пробрасываем —
         // pg-boss ретраит, а исчерпав ретраи, скопирует задачу в Q_PROCESS_DLQ.
         console.error('process failed', { itemId: job.data.itemId, err });

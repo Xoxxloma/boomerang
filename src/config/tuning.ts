@@ -26,4 +26,28 @@ export const tuning = {
   resonanceMinAgeDays: num('RESONANCE_MIN_AGE_DAYS', 10),
   /** Не показывать один и тот же старый item проактивно чаще, чем раз в столько дней (режим 2). */
   resonanceSurfaceCooldownDays: num('RESONANCE_SURFACE_COOLDOWN_DAYS', 30),
+  /** Режим 2: максимум проактивных РЕЗОНАНСОВ в сутки на юзера (созревание не ограничиваем). */
+  proactiveDailyCap: num('PROACTIVE_DAILY_CAP', 2),
+
+  // --- Бюджет-гарды на LLM-расходы (учёт стоимости, потолки, breaker). Цены $/1k токенов. ---
+  /** Цена входных токенов LLM $/1k. Дефолт — gpt-4o-mini; СВЕРИТЬ с актуальным прайсом LLM_MODEL. */
+  llmPricePromptPer1k: num('LLM_PRICE_PROMPT_PER_1K', 0.00015),
+  /** Цена выходных токенов LLM $/1k (gpt-4o-mini). */
+  llmPriceCompletionPer1k: num('LLM_PRICE_COMPLETION_PER_1K', 0.0006),
+  /** Цена эмбеддингов $/1k (text-embedding-3-small). */
+  embeddingPricePer1k: num('EMBEDDING_PRICE_PER_1K', 0.00002),
+  /** Дефолтный потолок выходных токенов на один chat-вызов (worst-case bound). */
+  llmMaxTokensDefault: num('LLM_MAX_TOKENS', 700),
+  /** Потолок токенов на синтез ответа (режим 1). */
+  synthMaxTokens: num('SYNTH_MAX_TOKENS', 700),
+  /** Сколько источников максимум отдаём в синтез (bound на размер промпта). */
+  synthMaxSources: num('SYNTH_MAX_SOURCES', 8),
+  /** Потолок токенов на дайджест (режим 3). */
+  digestMaxTokens: num('DIGEST_MAX_TOKENS', 500),
+  /** Персональный дневной потолок расхода ($/юзер/день). Превышение → стоп этому юзеру до полуночи UTC. */
+  userDailyCostCeilingUsd: num('USER_DAILY_COST_CEILING_USD', 0.5),
+  /** Мягкий общий дневной порог ($): выше — degraded (режем дорогую генерацию). */
+  globalDailySoftLimitUsd: num('GLOBAL_DAILY_SOFT_LIMIT_USD', 5),
+  /** Жёсткий общий дневной порог ($): выше — paused (стоп всему). */
+  globalDailyHardLimitUsd: num('GLOBAL_DAILY_HARD_LIMIT_USD', 10),
 } as const;
