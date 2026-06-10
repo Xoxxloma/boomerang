@@ -2,7 +2,7 @@ import type { Api } from 'grammy';
 import type { Message } from 'grammy/types';
 import { detect, hasMeaningfulCaption } from './detect.js';
 import { classify } from './classify.js';
-import { fetchLinkMeta } from '../content/og.js';
+import { fetchLinkMeta, hostnameOf } from '../content/og.js';
 import { insertItem, findItemByTgMessageId, findDuplicateItem, groupsAlreadyPosted } from '../db/items.js';
 import { getCluster } from '../db/clusters.js';
 import { enqueueProcess, type AckRef } from '../queue/index.js';
@@ -54,7 +54,10 @@ export async function saveItem(
 
   if (det.type === 'link' && det.url) {
     const meta = await fetchLinkMeta(det.url); // title + OG, тело НЕ читаем
-    title = meta.title;
+    // Нет вменяемого title (анти-бот сайт отдал заглушку → meta пуста) → фолбэк на хост (avito.ru):
+    // полезнее мусорной «Авито — Объявления…» и попадает в индекс (через buildIndexText.title).
+    // NB: хост латиницей — запрос кириллицей «авито» к нему не мостит (вне объёма); поиск по подписи работает.
+    title = meta.title ?? hostnameOf(det.url);
     description = meta.description;
   }
 

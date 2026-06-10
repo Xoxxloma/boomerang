@@ -1,4 +1,4 @@
-import { GrammyError, InlineKeyboard, type Bot, type Context } from 'grammy';
+import { InlineKeyboard, type Bot, type Context } from 'grammy';
 import { getItem, deleteItem, itemDisplayName } from '../../db/items.js';
 import { enqueueProcess } from '../../queue/index.js';
 import { IMAGE_SHELF } from '../../cluster/assign.js';
@@ -28,8 +28,8 @@ import type { Item } from '../../db/schema.js';
 const lastJump = new Map<number, { msgId: number; itemId: string }>();
 
 /**
- * Единственная «живая» карточка поста на чат (chatId → msgId). Новый тап по посту переиспользует
- * её (editMessageText), а не плодит сообщение вниз — список/выдача остаются на месте, спама нет.
+ * Единственная «живая» карточка поста на чат (chatId → msgId). Новый тап по посту удаляет прежнюю и
+ * шлёт свежую вниз чата — карточка всегда перед глазами (правка на месте была невидима при скролле).
  * In-memory ок (как lastJump): после рестарта первый тап создаст новую, старая осиротеет с живыми кнопками.
  */
 const lastCard = new Map<number, number>();
@@ -105,8 +105,9 @@ async function showPhotoCard(ctx: Context, chatId: number, item: Item): Promise<
 }
 
 /**
- * Показать карточку поста, переиспользуя единственный слот на чат: если карточка уже висит — правим
- * её на месте (editMessageText), иначе создаём новую и запоминаем. Так тап за тапом не плодим сообщения.
+ * Показать карточку поста в единственном слоте на чат: прежнюю карточку (если висит) удаляем и шлём
+ * свежую ВНИЗ чата (как showPhotoCard). Правка на месте была невидима, когда карточка уезжала вверх —
+ * теперь она всегда перед глазами. Повторный тап по тому же посту просто переносит карточку вниз.
  */
 async function showCard(ctx: Context, item: Item): Promise<void> {
   const chatId = ctx.chat?.id;
@@ -122,15 +123,8 @@ async function showCard(ctx: Context, item: Item): Promise<void> {
   };
   const existing = lastCard.get(chatId);
   if (existing != null) {
-    try {
-      await ctx.api.editMessageText(chatId, existing, renderCard(item), opts);
-      return;
-    } catch (e) {
-      // «not modified» — тапнули тот же пост дважды: ничего не пересоздаём, выходим.
-      if (e instanceof GrammyError && e.description.includes('message is not modified')) return;
-      // Иначе сообщение недоступно (удалено юзером / не редактируется) — освобождаем слот и шлём новое.
-      lastCard.delete(chatId);
-    }
+    await ctx.api.deleteMessage(chatId, existing).catch(() => {});
+    lastCard.delete(chatId);
   }
   const sent = await ctx.reply(renderCard(item), opts);
   lastCard.set(chatId, sent.message_id);
@@ -209,7 +203,7 @@ export function registerCallbacks(bot: Bot): void {
     }
 
     const item = await getItem(itemId);
-    if (!item) {
+    if (!item || item.userId !== ctx.from.id) {
       await delEditPending(msg.chat.id, msg.message_id);
       return ctx.answerCallbackQuery({ text: 'Запись не найдена', show_alert: true });
     }

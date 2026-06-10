@@ -65,4 +65,38 @@ describe('buildClassifySignal', () => {
     const s = buildClassifySignal({ ...base, title: null, description: null, rawText: null });
     expect(s).toBe('Содержание: https://example.com');
   });
+
+  it('для ссылки подпись юзера (rawText) идёт первой — title анти-бот сайта это шум', () => {
+    const s = buildClassifySignal({
+      ...base,
+      type: 'link',
+      title: 'Авито — Объявления на сайте Авито',
+      description: null,
+      rawText: 'Maison Margiela x HM кеды оригинал',
+    });
+    expect(s.indexOf('Maison Margiela')).toBeLessThan(s.indexOf('Авито'));
+  });
+
+  it('голая ссылка (rawText === url) → URL не ведёт сигнал, ведёт title', () => {
+    const s = buildClassifySignal({
+      ...base,
+      type: 'link',
+      url: 'https://youtube.com/watch?v=abc',
+      rawText: 'https://youtube.com/watch?v=abc',
+      title: 'Никонов х Старшинов | Киберстихи',
+      description: null,
+    });
+    expect(s).toBe('Содержание: Никонов х Старшинов | Киберстихи');
+  });
+
+  it('для документа имя файла (title) остаётся первым — подпись может быть шумом', () => {
+    const s = buildClassifySignal({
+      ...base,
+      type: 'document',
+      title: 'договор_аренды_2024.pdf',
+      description: null,
+      rawText: 'лол смотри что нашёл',
+    });
+    expect(s.indexOf('договор_аренды')).toBeLessThan(s.indexOf('лол'));
+  });
 });

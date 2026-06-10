@@ -8,7 +8,26 @@ import {
   recomputeClusterStats,
 } from '../db/clusters.js';
 import { cosineSimilarity } from './math.js';
+import { wordSimilarity } from '../retrieval/clusterMatch.js';
 import { tuning } from '../config/tuning.js';
+
+/**
+ * Согласуется ли категория от L1 (seedName) с именем ближайшего по эмбеддингу кластера. Эмбеддинг
+ * над-склеивает лексически похожее (рус. морфология: «Киберстихи»-концерт ≈ кластер «Киберспорт»,
+ * косинус 0.78). L1 (LLM) понимает СМЫСЛ — ему и верим при расхождении имён. Пустой/«Разное» seed =
+ * «мнения нет» → не мешаем эмбеддингу. Сравнение триграммное (как recall по имени) — терпит окончания.
+ */
+function seedAgreesWithCluster(seedName: string, clusterName: string): boolean {
+  const seed = seedName.trim();
+  if (!seed || seed === 'Разное') return true;
+  const seedWords = seed.toLowerCase().split(/\s+/).filter(Boolean);
+  const clusterWords = clusterName.toLowerCase().split(/\s+/).filter(Boolean);
+  let best = 0;
+  for (const sw of seedWords) {
+    for (const cw of clusterWords) best = Math.max(best, wordSimilarity(sw, cw));
+  }
+  return best >= tuning.clusterNameMatchThreshold;
+}
 
 /** Единая полка «Изображения» (§3.4): картинки не дробим на подкатегории. */
 export const IMAGE_SHELF = 'Изображения';
@@ -75,15 +94,18 @@ export async function assignCluster(item: Item, seedName: string): Promise<Assig
     }
   }
 
-  if (best && best.sim >= NEW_CLUSTER_THRESHOLD) {
+  // Вливаем в ближайший кластер, ТОЛЬКО если L1 не возражает по смыслу: эмбеддинг над-склеивает
+  // лексически похожее (концерт «Киберстихи» → кластер «Киберспорт»), а L1 видит суть. При расхождении
+  // имён проваливаемся в маршрутизацию по seed ниже — запись уйдёт в свою тему («Музыка»), не в чужую.
+  if (best && best.sim >= NEW_CLUSTER_THRESHOLD && seedAgreesWithCluster(seedName, best.name)) {
     await assignItemCluster(item.id, best.id);
     // size — реальное число записей после добавления (нужно maturity-триггеру: size === порог).
     const size = await recomputeClusterStats(best.id);
     return { clusterId: best.id, name: best.name, isNew: false, size };
   }
 
-  // Вектор далёк от всех кластеров. Но прежде чем плодить новый — не было бы дубля ПО ИМЕНИ
-  // (L1-классификатор выдал ту же категорию, напр. «Новости»/«Разное»). Как в батче: мёржим в
+  // Вектор далёк от всех кластеров (или L1 не согласен с ближайшим по смыслу). Но прежде чем плодить
+  // новый — не было бы дубля ПО ИМЕНИ (L1 выдал ту же категорию, напр. «Новости»). Как в батче: мёржим в
   // одноимённый, не создаём близнеца. Иначе /folders покажет две одинаковые папки, а recall по
   // имени категории размоется по дублям.
   const name = seedName || 'Разное';

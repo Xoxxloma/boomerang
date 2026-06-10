@@ -18,6 +18,10 @@ export const tuning = {
   clusterThreshold: num('CLUSTER_THRESHOLD', 0.45),
   /** Порог семантической похожести в поиске; ниже — отсекаем как нерелевантное (retrieval/search). */
   searchMinSimilarity: num('SEARCH_MIN_SIMILARITY', 0.15),
+  /** Мягкий порог косинуса для recall-пути по категории (retrieval/search). Ниже основного
+   *  searchMinSimilarity: recall существует ради «растворённой темы» (низкий косинус), но не
+   *  должен тащить случайных соседей по кластеру (мусор того же домена). Калибруется на корпусе. */
+  recallMinSimilarity: num('RECALL_MIN_SIMILARITY', 0.1),
   /** Триграммная близость имени кластера к слову запроса для recall-пути (retrieval/clusterMatch). */
   clusterNameMatchThreshold: num('CLUSTER_NAME_MATCH_THRESHOLD', 0.45),
   /** Размер кластера, на котором шлём «тема созрела» (режим 2, один раз). */

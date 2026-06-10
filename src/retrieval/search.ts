@@ -16,6 +16,8 @@ export interface SearchOptions {
   limit?: number;
   /** Порог похожести: ниже — отсекаем как нерелевантное. */
   minSimilarity?: number;
+  /** Мягкий порог похожести для recall-пути по категории (ниже minSimilarity); ловит «растворённую тему». */
+  recallMinSimilarity?: number;
   /** Фильтр по виду материала (из разбора запроса); пусто — все типы. */
   types?: ItemType[];
   /** Фильтр по свежести: только записи за последние N дней; null — без ограничения. */
@@ -87,6 +89,10 @@ export async function search(
   if (clusterIds.length === 0) return semantic;
 
   const seen = new Set(semantic.map((h) => h.item.id));
+  // Мягкий порог recall (§4): ниже основного minSimilarity, чтобы «растворённая тема» (кот в
+  // политическом посте, низкий косинус) прошла, но НЕ ниже плинтуса — иначе recall тащит случайных
+  // соседей по широкому кластеру («Новости»), не относящихся к запросу-сущности («путин»).
+  const recallFloor = opts.recallMinSimilarity ?? tuning.recallMinSimilarity;
   // Берём с запасом (limit + quota): часть совпадёт с семантикой и отсеется — нам нужно НОВОЕ,
   // чтобы recall реально что-то добавил, а не вернул уже найденное вектором.
   const clusterRows = await db
@@ -97,6 +103,7 @@ export async function search(
         eq(items.userId, userId),
         isNotNull(items.embedding),
         inArray(items.clusterId, clusterIds),
+        gt(similarity, recallFloor),
         ...filters,
       ),
     )

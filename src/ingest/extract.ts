@@ -25,8 +25,19 @@ export function buildIndexText(it: Indexable): string {
  * Сырой OCR сюда не тащим — он шумный и не для классификации.
  */
 export function buildClassifySignal(it: Indexable): string {
+  // Для ссылок подпись юзера (rawText) ведёт сигнал: scraped-title анти-бот сайта — шум (даже после
+  // junk-фильтра — подстраховка, если мусор проскочит), а подпись — настоящий сигнал. Но если «подпись»
+  // это сам URL (голая ссылка без текста) — она бесполезна как сигнал, ведут title/description.
+  // Для остальных типов порядок прежний: у документа имя файла (title) информативнее случайной подписи (§2.2).
+  let parts: (string | null | undefined)[];
+  if (it.type === 'link') {
+    const caption = it.rawText && it.rawText.trim() !== (it.url ?? '').trim() ? it.rawText : null;
+    parts = [caption, it.title, it.description];
+  } else {
+    parts = [it.title, it.description, it.rawText];
+  }
   const body =
-    [it.title, it.description, it.rawText]
+    parts
       .filter((s): s is string => Boolean(s && s.trim()))
       .join('\n')
       .trim() || it.url || '';
