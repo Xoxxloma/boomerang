@@ -1,5 +1,6 @@
 import { InlineKeyboard, type Bot, type Context } from 'grammy';
-import { getItem, deleteItem, itemDisplayName } from '../../db/items.js';
+import { getItem, deleteItem, itemDisplayName, listClusterContentFields } from '../../db/items.js';
+import { hasRealContent } from '../../ingest/extract.js';
 import { enqueueProcess } from '../../queue/index.js';
 import { IMAGE_SHELF } from '../../cluster/assign.js';
 import { classify } from '../../ingest/classify.js';
@@ -271,7 +272,16 @@ export function registerCallbacks(bot: Bot): void {
 
     await ctx.answerCallbackQuery({ text: 'Свожу…' });
     const hits = clusterItems.map((item) => ({ item, similarity: 1 }));
-    await respondWithSynthesis(ctx, cluster.name, hits, userId);
+    // Честность сводки: пустышки (только имя файла/URL) фактов не дадут и могут не процитироваться —
+    // молчаливое «исчезновение» источников выглядит багом. Считаем по ПОЛНОМУ кластеру (лёгкий селект,
+    // listClusterItems обрезан synthMaxSources) и говорим прямо.
+    const fields = await listClusterContentFields(userId, clusterId);
+    const empty = fields.filter((f) => !hasRealContent(f)).length;
+    const footnote =
+      empty > 0
+        ? `ℹ️ Ещё ${empty} матер. в теме не прочитаны (только имя файла/ссылка) — фактов из них в сводке нет.`
+        : undefined;
+    await respondWithSynthesis(ctx, cluster.name, hits, userId, { footnote });
   });
 
   // «Повторить» из сообщения о сбое индексации — перезапуск L2 для КОНКРЕТНОЙ записи (это сообщение).
@@ -497,8 +507,10 @@ export function registerCallbacks(bot: Bot): void {
       await ctx.reply(`✅ Перенёс в «${existing.name}».`);
     } else {
       // Новый кластер: создаём с эмбеддингом записи как стартовым центроидом (единственный член).
+      // При гонке createCluster вернёт существующий одноимённый — пересчёт stats обязателен.
       const created = await createCluster(ctx.from.id, name, emb);
       await assignItemCluster(itemId, created.id, true);
+      await recomputeClusterStats(created.id);
       await ctx.reply(`✅ Создал категорию «${name}» и положил туда.`);
     }
     // Запись ушла из прежнего кластера — пересчитываем его статистику от истины.

@@ -1,10 +1,11 @@
 import { InlineKeyboard } from 'grammy';
-import type { AssignResult } from '../cluster/assign.js';
+import { LINKS_SHELF, type AssignResult } from '../cluster/assign.js';
 import type { Item } from '../db/schema.js';
 import { getBotApi } from '../bot/api.js';
 import { getProactiveMode, type ProactiveMode } from '../db/users.js';
 import { getCluster, setClusterMatured } from '../db/clusters.js';
-import { findOlderSiblingInCluster } from '../db/items.js';
+import { findOlderSiblingInCluster, listClusterContentFields } from '../db/items.js';
+import { hasRealContent } from '../ingest/extract.js';
 import { logSurfacing, wasItemSurfacedRecently, countSurfacedToday } from '../db/surfacing.js';
 import { tuning } from '../config/tuning.js';
 
@@ -25,12 +26,16 @@ export type Trigger = 'maturity' | 'resonance';
  * Чистая логика выбора триггера (без БД/сети — тестируется отдельно).
  * Максимум один на входящий item; maturity приоритетнее resonance.
  * - новый кластер → ничего (всплытие только когда новое легло к старому);
- * - размер ровно достиг порога и ещё не слали maturity → maturity;
+ * - СОДЕРЖАТЕЛЬНЫХ записей достигло порога и ещё не слали maturity → maturity;
  * - иначе (дополнили существующий) → resonance-кандидат.
+ * contentfulSize — число записей кластера с реальным содержимым (hasRealContent): пустышки
+ * (только имя файла/URL) не должны «дозревать» тему — сводить по ним нечего (инцидент с «Недвижимостью»).
+ * Сравнение `>=`, не `===`: отфильтрованный счёт растёт скачками, точное равенство пропустило бы порог
+ * навсегда; «один раз» гарантирует maturedAt-гард.
  */
-export function pickTrigger(result: AssignResult, maturedAt: Date | null): Trigger | null {
+export function pickTrigger(result: AssignResult, maturedAt: Date | null, contentfulSize: number): Trigger | null {
   if (result.isNew) return null;
-  if (result.size === MATURITY_THRESHOLD && maturedAt === null) return 'maturity';
+  if (contentfulSize >= MATURITY_THRESHOLD && maturedAt === null) return 'maturity';
   return 'resonance';
 }
 
@@ -51,12 +56,25 @@ export async function maybeSurface(item: Item, result: AssignResult): Promise<vo
     const cluster = await getCluster(result.clusterId);
     if (!cluster) return;
 
-    const trigger = pickTrigger(result, cluster.maturedAt);
+    // Полка «Ссылки» — пустышки без темы: ни «созревание» (сводить нечего), ни резонанс
+    // («ты уже сохранял: avito.ru» — мусорное напоминание) по ней не шлём.
+    if (cluster.name === LINKS_SHELF) return;
+
+    // Пустышки (только имя/URL) тему не «зреют» — сводить по ним нечего. Считаем содержательные
+    // ТОЛЬКО в окне кандидата на maturity (size дорос, ещё не слали) — вне окна селект не делаем.
+    let contentful = 0;
+    if (!result.isNew && cluster.maturedAt === null && result.size >= MATURITY_THRESHOLD) {
+      const fields = await listClusterContentFields(item.userId, cluster.id);
+      contentful = fields.filter(hasRealContent).length;
+    }
+
+    const trigger = pickTrigger(result, cluster.maturedAt, contentful);
     if (!trigger) return;
 
     if (trigger === 'maturity') {
       // Созревание — раз на тему, дневным лимитом НЕ режем. Кнопка «📋 Свести» вместо текста /find.
-      const text = `У тебя накопилось ${result.size} материалов в теме «${cluster.name}». Свести в один ответ?`;
+      // В тексте — число СОДЕРЖАТЕЛЬНЫХ (не обещаем 5 материалов, когда читаемых 3).
+      const text = `У тебя накопилось ${contentful} материалов в теме «${cluster.name}». Свести в один ответ?`;
       await setClusterMatured(cluster.id);
       await logSurfacing({
         userId: item.userId,

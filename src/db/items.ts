@@ -34,6 +34,32 @@ export async function itemsByClusterPage(
   return { items: rows, total: c?.total ?? 0 };
 }
 
+/**
+ * Лёгкие контент-поля ВСЕХ записей кластера — для подсчёта содержательных (hasRealContent) в триггере
+ * созревания и футере сводки. Не тащим vector и полные тела (документы до 40k): предикату важна лишь
+ * непустота, а для ссылок (URL-стрип) хватает первых 500 символов rawText.
+ */
+export async function listClusterContentFields(
+  userId: number,
+  clusterId: string,
+  limit = 500,
+): Promise<Pick<Item, 'type' | 'url' | 'title' | 'description' | 'rawText' | 'ocrText' | 'transcript' | 'sourceChat'>[]> {
+  return db
+    .select({
+      type: items.type,
+      url: items.url,
+      title: items.title,
+      description: sql<string | null>`left(${items.description}, 1)`,
+      rawText: sql<string | null>`left(${items.rawText}, 500)`,
+      ocrText: sql<string | null>`left(${items.ocrText}, 1)`,
+      transcript: sql<string | null>`left(${items.transcript}, 1)`,
+      sourceChat: items.sourceChat,
+    })
+    .from(items)
+    .where(and(eq(items.userId, userId), eq(items.clusterId, clusterId)))
+    .limit(limit);
+}
+
 /** Страница записей канала (по sourceChat) — для открытия и листания папки канала в /folders. */
 export async function itemsBySourcePage(
   userId: number,

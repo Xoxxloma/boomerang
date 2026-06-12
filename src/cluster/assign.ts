@@ -33,6 +33,14 @@ function seedAgreesWithCluster(seedName: string, clusterName: string): boolean {
 export const IMAGE_SHELF = 'Изображения';
 
 /**
+ * Нейтральная полка для ссылок-пустышек (анти-бот сайт не отдал OG, подписи нет, в URL только хост):
+ * темы у записи нет, и уверенное LLM-гадание по домену давало ложные категории (avito → «Недвижимость»),
+ * засоряя тематические кластеры. Полка исключена из проактивных всплытий (maybeSurface) и кнопок
+ * «Свести» дайджеста — мусор не должен «дозревать».
+ */
+export const LINKS_SHELF = 'Ссылки';
+
+/**
  * Принудительно кладёт item в именованную полку (не по схожести). Для картинок.
  * Если есть эмбеддинг — подтягивает центроид полки (для поиска это не важно, но держим консистентно).
  */
@@ -46,6 +54,9 @@ export async function assignToShelf(
   if (!shelf) {
     const created = await createCluster(userId, name, emb);
     await assignItemCluster(itemId, created.id);
+    // createCluster при гонке мог вернуть СУЩЕСТВУЮЩУЮ полку соседа — пересчёт от истины обязателен
+    // (да и для честно новой он лишь подтвердит size=1).
+    await recomputeClusterStats(created.id);
     return;
   }
   await assignItemCluster(itemId, shelf.id);
@@ -116,7 +127,11 @@ export async function assignCluster(item: Item, seedName: string): Promise<Assig
     return { clusterId: byName.id, name: byName.name, isNew: false, size };
   }
 
+  // createCluster при гонке может вернуть кластер, только что созданный соседом, — тогда это merge,
+  // а не создание: пересчитываем stats от истины и честно отдаём isNew по реальному размеру
+  // (size=1 ⇔ действительно новый; иначе maturity-триггеру нельзя врать «новый, размер 1»).
   const created = await createCluster(item.userId, name, emb);
   await assignItemCluster(item.id, created.id);
-  return { clusterId: created.id, name: created.name, isNew: true, size: 1 };
+  const size = await recomputeClusterStats(created.id);
+  return { clusterId: created.id, name: created.name, isNew: size <= 1, size };
 }

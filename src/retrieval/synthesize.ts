@@ -1,6 +1,7 @@
 import { chat } from '../ai/llm.js';
 import { SYNTHESIZE_SYSTEM, synthesizePrompt } from '../ai/prompts.js';
 import { tuning } from '../config/tuning.js';
+import { hasRealContent } from '../ingest/extract.js';
 import type { Item } from '../db/schema.js';
 import type { SearchHit } from './search.js';
 
@@ -11,14 +12,19 @@ export interface Synthesis {
 }
 
 /** Короткий фрагмент item для контекста LLM. Документам даём больше — у них первые сотни символов
- *  это шапка/реквизиты, фактура дальше по телу; коротким типам хватает 600. */
-function snippet(it: Item): string {
+ *  это шапка/реквизиты, фактура дальше по телу; коротким типам хватает 600.
+ *  Запись без настоящего содержимого (только имя файла/ссылка) явно помечаем — иначе LLM сочиняет
+ *  факты из имени файла (инцидент: «ДДУ зарегистрирован…» из имени pdf). Экспорт — для юнитов. */
+export function snippet(it: Item): string {
   const parts = [it.title, it.description, it.rawText, it.ocrText, it.transcript]
     .filter((s): s is string => Boolean(s && s.trim()))
     .join(' — ');
   const cap = it.type === 'document' ? tuning.synthDocChars : tuning.synthSnippetChars;
   const body = parts.slice(0, cap);
-  return it.url ? `${body} (${it.url})` : body;
+  const marked = hasRealContent(it)
+    ? body
+    : `${body} [содержимое не прочитано — есть только имя файла/ссылка, фактов внутри нет]`;
+  return it.url ? `${marked} (${it.url})` : marked;
 }
 
 /**

@@ -64,6 +64,13 @@
       "when": 1781093643322,
       "tag": "0008_rare_deathbird",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1781257000503,
+      "tag": "0009_curved_hitman",
+      "breakpoints": true
     }
   ]
 }

@@ -17,6 +17,7 @@
     "db:migrate:prod": "tsx src/db/migrate.ts dotenv_config_path=.env.production",
     "db:push": "drizzle-kit push",
     "db:studio": "drizzle-kit studio",
+    "backfill:docs": "tsx scripts/backfill-empty-docs.ts",
     "test": "vitest run"
   },
   "dependencies": {
@@ -25,6 +26,7 @@
     "@grammyjs/transformer-throttler": "^1.2.1",
     "dotenv": "^16.4.7",
     "drizzle-orm": "^0.38.3",
+    "exceljs": "^4.4.0",
     "grammy": "^1.32.0",
     "mammoth": "^1.12.0",
     "open-graph-scraper": "^6.11.0",

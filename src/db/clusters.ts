@@ -47,6 +47,12 @@ export async function findClusterByNameCI(userId: number, name: string): Promise
   return row;
 }
 
+/**
+ * Создать кластер. Гонка check-then-create (два воркера одновременно не нашли имя и оба создают)
+ * ловится уникальным индексом clusters_user_name_ci_uq: onConflictDoNothing вместо ошибки →
+ * перечитываем и возвращаем уже созданный соседом кластер. Вызывающий не отличает исходы — и не должен
+ * (но обязан пересчитать stats: при race-merge центроид/size существующего не учитывают его item).
+ */
 export async function createCluster(
   userId: number,
   name: string,
@@ -55,9 +61,12 @@ export async function createCluster(
   const [row] = await db
     .insert(clusters)
     .values({ userId, name, centroid, size: 1 })
+    .onConflictDoNothing()
     .returning();
-  if (!row) throw new Error('createCluster: пустой результат');
-  return row;
+  if (row) return row;
+  const existing = await findClusterByNameCI(userId, name);
+  if (!existing) throw new Error(`createCluster: конфликт без записи («${name}»)`);
+  return existing;
 }
 
 /**

@@ -1,3 +1,4 @@
+import { sql } from 'drizzle-orm';
 import {
   pgTable,
   pgEnum,
@@ -10,6 +11,7 @@ import {
   timestamp,
   vector,
   index,
+  uniqueIndex,
   primaryKey,
   date,
   numeric,
@@ -57,6 +59,9 @@ export const clusters = pgTable(
   (t) => [
     index('clusters_user_idx').on(t.userId),
     index('clusters_centroid_idx').using('hnsw', t.centroid.op('vector_cosine_ops')),
+    // Дубли одноимённых кластеров размывают recall по имени и плодят двойные папки в /folders.
+    // CI-уникальность (lower) + onConflict-фолбэк в createCluster закрывают гонку check-then-create.
+    uniqueIndex('clusters_user_name_ci_uq').on(t.userId, sql`lower(${t.name})`),
   ],
 );
 

@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { buildIndexText, buildClassifySignal, type Indexable } from '../src/ingest/extract.js';
+import {
+  buildIndexText,
+  buildClassifySignal,
+  hasRealContent,
+  isContentlessLink,
+  type Indexable,
+} from '../src/ingest/extract.js';
 
 const base: Indexable = {
   type: 'link',
@@ -61,9 +67,9 @@ describe('buildClassifySignal', () => {
     expect(s).toBe('Содержание: ' + 'a'.repeat(500));
   });
 
-  it('падает на url, если текста нет', () => {
+  it('для ссылки без текста — сигнал из слов URL (де-слаг хоста/пути)', () => {
     const s = buildClassifySignal({ ...base, title: null, description: null, rawText: null });
-    expect(s).toBe('Содержание: https://example.com');
+    expect(s).toBe('Содержание: example.com');
   });
 
   it('для ссылки подпись юзера (rawText) идёт первой — title анти-бот сайта это шум', () => {
@@ -77,7 +83,7 @@ describe('buildClassifySignal', () => {
     expect(s.indexOf('Maison Margiela')).toBeLessThan(s.indexOf('Авито'));
   });
 
-  it('голая ссылка (rawText === url) → URL не ведёт сигнал, ведёт title', () => {
+  it('голая ссылка (rawText === url) → сырой URL не ведёт сигнал, ведёт title', () => {
     const s = buildClassifySignal({
       ...base,
       type: 'link',
@@ -86,7 +92,23 @@ describe('buildClassifySignal', () => {
       title: 'Никонов х Старшинов | Киберстихи',
       description: null,
     });
-    expect(s).toBe('Содержание: Никонов х Старшинов | Киберстихи');
+    expect(s.startsWith('Содержание: Никонов х Старшинов | Киберстихи')).toBe(true);
+    expect(s).not.toContain('https://'); // сырой URL в сигнал не попал (вместо него — де-слаг)
+  });
+
+  it('тему ссылки берём из пути URL, когда OG-заглушка (avito → одежда/обувь)', () => {
+    const s = buildClassifySignal({
+      ...base,
+      type: 'link',
+      url: 'https://www.avito.ru/moskva/odezhda_obuv_aksessuary/maison_margiela_8102862059?utm_source=x',
+      rawText: 'https://www.avito.ru/moskva/odezhda_obuv_aksessuary/maison_margiela_8102862059',
+      title: 'avito.ru',
+      description: null,
+    });
+    expect(s).toContain('odezhda obuv aksessuary');
+    expect(s).toContain('maison margiela');
+    expect(s).not.toContain('8102862059'); // чисто-числовой id отброшен
+    expect(s).not.toContain('utm'); // query отброшен
   });
 
   it('для документа имя файла (title) остаётся первым — подпись может быть шумом', () => {
@@ -98,5 +120,85 @@ describe('buildClassifySignal', () => {
       rawText: 'лол смотри что нашёл',
     });
     expect(s.indexOf('договор_аренды')).toBeLessThan(s.indexOf('лол'));
+  });
+});
+
+describe('hasRealContent', () => {
+  const empty: Indexable = {
+    type: 'text',
+    url: null,
+    title: null,
+    description: null,
+    rawText: null,
+    ocrText: null,
+    transcript: null,
+    sourceChat: null,
+  };
+
+  it('голая ссылка (rawText = сам URL) → false', () => {
+    expect(
+      hasRealContent({ ...empty, type: 'link', url: 'https://avito.ru/x', rawText: 'https://avito.ru/x' }),
+    ).toBe(false);
+  });
+
+  it('ссылка с подписью → true', () => {
+    expect(
+      hasRealContent({ ...empty, type: 'link', url: 'https://a.ru/x', rawText: 'кеды оригинал https://a.ru/x' }),
+    ).toBe(true);
+  });
+
+  it('документ только с именем файла (title) → false', () => {
+    expect(hasRealContent({ ...empty, type: 'document', title: 'ДДУ № М-НА-632 Лосев К.В.pdf' })).toBe(false);
+  });
+
+  it('документ с подписью юзера → true', () => {
+    expect(
+      hasRealContent({ ...empty, type: 'document', title: 'scan.pdf', rawText: 'это договор по квартире' }),
+    ).toBe(true);
+  });
+
+  it('voice без транскрипции и подписи → false, с транскрипцией → true', () => {
+    expect(hasRealContent({ ...empty, type: 'voice' })).toBe(false);
+    expect(hasRealContent({ ...empty, type: 'voice', transcript: 'напомни про оплату' })).toBe(true);
+  });
+
+  it('description (OG) или ocrText считаются содержимым', () => {
+    expect(hasRealContent({ ...empty, type: 'link', url: 'https://a.ru', description: 'статья про X' })).toBe(true);
+    expect(hasRealContent({ ...empty, type: 'image', ocrText: 'текст с картинки' })).toBe(true);
+  });
+});
+
+describe('isContentlessLink', () => {
+  const bare: Indexable = {
+    type: 'link',
+    url: 'https://www.avito.ru/',
+    title: 'avito.ru',
+    description: null,
+    rawText: 'https://www.avito.ru/',
+    ocrText: null,
+    transcript: null,
+    sourceChat: null,
+  };
+
+  it('хост-title без OG/подписи/слов пути → true', () => {
+    expect(isContentlessLink(bare)).toBe(true);
+  });
+
+  it('слаг со словами пути → false (тему понесёт слаг)', () => {
+    expect(
+      isContentlessLink({ ...bare, url: 'https://www.avito.ru/moskva/odezhda_obuv/maison_123' }),
+    ).toBe(false);
+  });
+
+  it('настоящий OG-title → false', () => {
+    expect(isContentlessLink({ ...bare, title: 'Maison Margiela кеды — объявление' })).toBe(false);
+  });
+
+  it('есть OG-description → false', () => {
+    expect(isContentlessLink({ ...bare, description: 'объявление о продаже' })).toBe(false);
+  });
+
+  it('не-ссылка → false', () => {
+    expect(isContentlessLink({ ...bare, type: 'document' })).toBe(false);
   });
 });

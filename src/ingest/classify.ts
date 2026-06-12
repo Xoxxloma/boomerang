@@ -1,6 +1,7 @@
 import { chatJson } from '../ai/llm.js';
 import { CLASSIFY_SYSTEM, classifyPrompt } from '../ai/prompts.js';
-import { buildClassifySignal, type Indexable } from './extract.js';
+import { LINKS_SHELF } from '../cluster/assign.js';
+import { buildClassifySignal, isContentlessLink, type Indexable } from './extract.js';
 
 /**
  * L1-классификация по дешёвому сигналу: одна короткая категория (§5 Level 1).
@@ -8,6 +9,10 @@ import { buildClassifySignal, type Indexable } from './extract.js';
  * В вехе 4 поверх этого появятся кластеры; промах тут не критичен.
  */
 export async function classify(it: Indexable, userId: number): Promise<string> {
+  // Ссылка-пустышка (ни подписи, ни OG, в URL только хост): темы нет — не зовём LLM гадать по
+  // домену (avito → ложная «Недвижимость»), кладём на нейтральную полку. Бесплатно и честно.
+  if (isContentlessLink(it)) return LINKS_SHELF;
+
   const signal = buildClassifySignal(it);
   if (!signal.trim()) return 'Разное';
 

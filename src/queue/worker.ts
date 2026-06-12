@@ -1,7 +1,7 @@
 import { InlineKeyboard } from 'grammy';
 import { getBoss, Q_PROCESS, Q_FLUSH_ALBUM, Q_BURST_FLUSH, Q_PROCESS_DLQ } from './boss.js';
 import type { ProcessJob, FlushAlbumJob, BurstFlushJob } from './index.js';
-import { processItem } from './jobs/process.js';
+import { processItem, type ProcessResult } from './jobs/process.js';
 import { flushAlbum } from '../ingest/album.js';
 import { flushBurst, notifyBurstFlushFailed } from '../import/burst.js';
 import { getItem, itemDisplayName } from '../db/items.js';
@@ -21,9 +21,9 @@ export async function startWorkers(): Promise<void> {
 
   await boss.work<ProcessJob>(Q_PROCESS, { batchSize: 1 }, async (jobs) => {
     for (const job of jobs) {
-      let clusterName: string | null = null;
+      let res: ProcessResult = { clusterName: null, docUnreadable: false };
       try {
-        clusterName = await processItem(job.data.itemId, job.data.seedCategory);
+        res = await processItem(job.data.itemId, job.data.seedCategory);
       } catch (err) {
         // Бюджет-гард: персональный потолок / глобальный paused. Ретраить бессмысленно (лимит за
         // ~25с не уйдёт), DLQ дал бы обезличенный «сбой». Правим сообщение точным текстом и НЕ
@@ -53,13 +53,19 @@ export async function startWorkers(): Promise<void> {
         console.error('process failed', { itemId: job.data.itemId, err });
         throw err;
       }
+      // Документ остался без тела (скан/неподдержанный формат) — честно предупреждаем, а не
+      // делаем вид, что всё проиндексировано: найдётся он только по имени файла и подписи.
+      const warn = res.docUnreadable
+        ? '\n⚠️ Содержимое файла прочитать не смог — найду его только по имени и подписи.'
+        : '';
+
       // Успех ПОВТОРНОЙ обработки (по кнопке) → честно обновляем сообщение поста: теперь найдётся.
       const { ack, notifyOnSuccess, itemId, seedCategory } = job.data;
       if (notifyOnSuccess && ack) {
         const item = await getItem(itemId);
         const name = item ? itemDisplayName(item) : 'запись';
         await getBotApi()
-          .editMessageText(ack.chatId, ack.messageId, `✅ Доиндексировал «${name}» — теперь найду в поиске.`)
+          .editMessageText(ack.chatId, ack.messageId, `✅ Доиндексировал «${name}» — теперь найду в поиске.${warn}`)
           .catch(() => {});
         continue;
       }
@@ -71,9 +77,9 @@ export async function startWorkers(): Promise<void> {
       if (ack) {
         const item = await getItem(itemId);
         if (item && item.type !== 'image' && !item.clusterLocked) {
-          const finalName = clusterName ?? seedCategory;
+          const finalName = res.clusterName ?? seedCategory;
           await getBotApi()
-            .editMessageText(ack.chatId, ack.messageId, `✅ Положил в ${label(item.title, finalName)}`, {
+            .editMessageText(ack.chatId, ack.messageId, `✅ Положил в ${label(item.title, finalName)}${warn}`, {
               reply_markup: fixKeyboard(itemId),
             })
             .catch(() => {});

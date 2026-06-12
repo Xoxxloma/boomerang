@@ -2,7 +2,7 @@ import { and, desc, eq, gt, sql } from 'drizzle-orm';
 import { InlineKeyboard } from 'grammy';
 import { db } from '../db/client.js';
 import { items, clusters, type Item } from '../db/schema.js';
-import { IMAGE_SHELF } from '../cluster/assign.js';
+import { IMAGE_SHELF, LINKS_SHELF } from '../cluster/assign.js';
 
 interface Theme {
   clusterId: string | null;
@@ -105,8 +105,9 @@ export async function buildDigest(userId: number, days = 7): Promise<Digest> {
   const keyboard = new InlineKeyboard();
   let buttons = 0;
   for (const t of themes) {
-    // Полку изображений не сводим (нет текста, §3.4) — кнопку не даём, только агрегат-блок выше.
-    if (t.clusterId && t.name !== IMAGE_SHELF && buttons < MAX_BUTTONS) {
+    // Полку изображений не сводим (нет текста, §3.4), полку «Ссылки» тоже (пустышки без темы) —
+    // кнопку не даём, только агрегат-блок выше.
+    if (t.clusterId && t.name !== IMAGE_SHELF && t.name !== LINKS_SHELF && buttons < MAX_BUTTONS) {
       keyboard.text(`📋 Свести «${t.name}»`, `synth:${t.clusterId}`).row();
       buttons += 1;
     }

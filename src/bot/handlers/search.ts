@@ -108,12 +108,15 @@ export async function handleQuery(ctx: Context, query: string): Promise<void> {
  * Связный синтез по уже найденным источникам (§6, режим 1) + кнопки процитированных источников.
  * Общий хвост для /find (после search) и «Свести «тему»» (по записям кластера напрямую).
  * degraded (breaker не normal) → список источников; падение LLM → список как запасной вариант.
+ * opts.footnote — строка-приписка после ответа (кластерная сводка честно сообщает о невошедших
+ * пустышках); обычный поиск её не передаёт — там скрытие нерелевантного корректно.
  */
 export async function respondWithSynthesis(
   ctx: Context,
   query: string,
   hits: SearchHit[],
   userId: number,
+  opts?: { footnote?: string },
 ): Promise<void> {
   // degraded: дорогой синтез на паузе — отдаём список источников (чтение продолжает работать).
   if (breakerState() !== 'normal') {
@@ -139,8 +142,9 @@ export async function respondWithSynthesis(
   }
 
   // Кнопки извлекаем из УЖЕ обрезанного текста (Telegram-лимит 4096): иначе появились бы кнопки
-  // источников, цитаты которых отрезаны и пользователю не видны.
-  const shown = answer.slice(0, 4096);
+  // источников, цитаты которых отрезаны и пользователю не видны. Под футер резервируем место.
+  const reserve = opts?.footnote ? opts.footnote.length + 2 : 0;
+  const shown = answer.slice(0, 4096 - reserve);
   // Показываем кнопки ТОЛЬКО реально процитированных источников.
   // Один пункт на источник во всю ширину; тап открывает карточку (переход/удаление).
   const cited = extractCitedIndices(shown, sources.length);
@@ -153,7 +157,7 @@ export async function respondWithSynthesis(
     }
   }
 
-  await ctx.reply(shown, {
+  await ctx.reply(opts?.footnote ? `${shown}\n\n${opts.footnote}` : shown, {
     link_preview_options: { is_disabled: true },
     ...(keyboard ? { reply_markup: keyboard } : {}),
   });
