@@ -7,13 +7,18 @@ set -eu
 
 cd "$(dirname "$0")/.."
 
-echo "→ npm ci (детерминированная установка из package-lock.json)"
-npm ci
+# На стенде 1 ГБ RAM: останавливаем бота ДО npm ci, чтобы освободить память,
+# иначе npm убивает OOM killer. Рестарт в конце поднимет его обратно.
+echo "→ останавливаем сервис (освобождаем RAM под npm ci)"
+sudo systemctl stop boomerang
+
+echo "→ npm ci (только прод-зависимости; тулинг из devDependencies проду не нужен)"
+npm ci --omit=dev --no-audit --no-fund
 
 echo "→ миграции на прод-БД (идемпотентно: drizzle пропустит применённые)"
 npm run db:migrate:prod
 
-echo "→ рестарт сервиса"
+echo "→ запуск сервиса"
 sudo systemctl restart boomerang
 
 echo "→ статус"
