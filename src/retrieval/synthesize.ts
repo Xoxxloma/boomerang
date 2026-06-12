@@ -19,7 +19,10 @@ export function snippet(it: Item): string {
   const parts = [it.title, it.description, it.rawText, it.ocrText, it.transcript]
     .filter((s): s is string => Boolean(s && s.trim()))
     .join(' — ');
-  const cap = it.type === 'document' ? tuning.synthDocChars : tuning.synthSnippetChars;
+  // Транскрипт голосового/видео — как тело документа: фактура размазана по тексту, 600 символов
+  // дали бы LLM обрывок начала. Даём документный потолок.
+  const cap =
+    it.type === 'document' || it.transcript?.trim() ? tuning.synthDocChars : tuning.synthSnippetChars;
   const body = parts.slice(0, cap);
   const marked = hasRealContent(it)
     ? body

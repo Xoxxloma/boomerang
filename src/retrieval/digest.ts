@@ -41,8 +41,12 @@ function imagesPlural(n: number): string {
 
 /** Человекочитаемый заголовок материала для строки дайджеста (≤80 симв., в одну строку). */
 function titleOf(it: Item): string {
-  // У картинок (§3.4) нет человекочитаемого имени, а сырой OCR показывать нельзя — типизированный плейсхолдер.
-  if (it.type === 'image') return '🖼 Изображение';
+  // У картинок заголовок даёт vision-аннотация (L2); сырой OCR/description показывать нельзя (§3.4),
+  // поэтому без title — типизированный плейсхолдер.
+  if (it.type === 'image') {
+    const t = it.title?.trim();
+    return t ? `🖼 ${t.replace(/\s+/g, ' ').slice(0, 77)}` : '🖼 Изображение';
+  }
   const raw = it.title ?? it.rawText ?? it.url ?? 'без названия';
   return raw.trim().replace(/\s+/g, ' ').slice(0, 80);
 }

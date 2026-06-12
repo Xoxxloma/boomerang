@@ -27,15 +27,14 @@ export async function notifyAdmins(key: string, text: string): Promise<void> {
  * (проверено curl), поэтому нули — сигнал смены/поломки эндпоинта. Шлём алерт (троттл по типу вызова).
  */
 export async function alertIfUsageMissing(
-  kind: 'llm' | 'embedding',
+  kind: 'llm' | 'embedding' | 'vision',
   promptTokens: number,
   completionTokens: number,
 ): Promise<void> {
   if (promptTokens > 0 || completionTokens > 0) return; // usage пришёл — норма, молчим
-  const varName = kind === 'llm' ? 'LLM_BASE_URL' : 'EMBEDDING_BASE_URL';
   await notifyAdmins(
     `usage-missing:${kind}`,
     `⚠️ Бюджет-гард: ответ ${kind}-API без поля usage (токены = 0). ` +
-      `Учёт расхода не считает — дневные лимиты фактически ОТКЛЮЧЕНЫ. Проверь ${varName}.`,
+      `Учёт расхода не считает — дневные лимиты фактически ОТКЛЮЧЕНЫ. Проверь провайдера (${kind}).`,
   );
 }

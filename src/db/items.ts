@@ -239,6 +239,19 @@ export async function setTranscript(id: string, transcript: string): Promise<voi
 }
 
 /**
+ * Машинная аннотация записи — только в индекс, пользователю не показываем (как OCR/транскрипт).
+ * Поле description едино по семантике: OG-мета у ссылок (save), vision-описание у картинок (L2).
+ */
+export async function setDescription(id: string, description: string): Promise<void> {
+  await db.update(items).set({ description }).where(eq(items.id, id));
+}
+
+/** Заголовок записи (LLM-резюме транскрипта голосового/видео) — видим в выдаче/карточке. */
+export async function setTitle(id: string, title: string): Promise<void> {
+  await db.update(items).set({ title }).where(eq(items.id, id));
+}
+
+/**
  * Самый похожий «старый сосед» в том же кластере — для проактивного резонанса (режим 2, триггер A).
  * Берём только достаточно старые item (createdAt < now() - minAgeDays), сортируем по близости
  * к queryVec (косинус). Паттерн похожести — как в retrieval/search.ts.

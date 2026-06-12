@@ -13,6 +13,12 @@ export interface ProcessJob {
   ack?: AckRef;
   /** Повторная обработка по кнопке — при УСПЕХЕ обновить сообщение на «доиндексировал». */
   notifyOnSuccess?: boolean;
+  /**
+   * Голос/видео сохранён БЕЗ расшифровки по известной на L1 причине (файл >20MB — Bot API не отдаст).
+   * Worker честно допишет это к «Положил…». В payload, а не вычислением в L2: там по отсутствию
+   * tgFileId большой файл неотличим от gif (у которого нет аудиодорожки и предупреждать не о чем).
+   */
+  sttSkipReason?: 'too_big';
 }
 
 export interface FlushAlbumJob {
@@ -42,10 +48,11 @@ export async function enqueueProcess(
   seedCategory: string,
   ack?: AckRef,
   notifyOnSuccess = false,
+  sttSkipReason?: 'too_big',
 ): Promise<void> {
   await getBoss().send(
     Q_PROCESS,
-    { itemId, seedCategory, ack, notifyOnSuccess } satisfies ProcessJob,
+    { itemId, seedCategory, ack, notifyOnSuccess, sttSkipReason } satisfies ProcessJob,
     // deadLetter: исчерпав ретраи, задача копируется в Q_PROCESS_DLQ → оттуда правим сообщение поста.
     // retryDelay 8с: даём временному сбою (rate-limit/сеть) шанс, но не тянем — сбой всплывёт за ~25с.
     { singletonKey: itemId, retryLimit: 3, retryDelay: 8, deadLetter: Q_PROCESS_DLQ },

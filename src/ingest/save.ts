@@ -1,6 +1,6 @@
 import type { Api } from 'grammy';
 import type { Message } from 'grammy/types';
-import { detect, hasMeaningfulCaption } from './detect.js';
+import { detect, hasMeaningfulCaption, mediaFileRef } from './detect.js';
 import { classify } from './classify.js';
 import { fetchLinkMeta, hostnameOf } from '../content/og.js';
 import { insertItem, findItemByTgMessageId, findDuplicateItem, groupsAlreadyPosted } from '../db/items.js';
@@ -27,6 +27,7 @@ export async function saveItem(
   let description: string | undefined;
   let tgFileId: string | undefined;
   let tgFileUniqueId: string | undefined;
+  let sttSkipReason: 'too_big' | undefined;
 
   // Извлекаем id файла/имя документа РАНЬШЕ сетевого fetchLinkMeta: они нужны для дедупа,
   // а при дубле дорогой OG-запрос вообще не делаем.
@@ -42,6 +43,14 @@ export async function saveItem(
       tgFileUniqueId = doc.file_unique_id;
       title = doc.file_name ?? undefined; // имя файла — дешёвый сигнал для классификации
     }
+  } else if (det.type === 'voice' || det.type === 'video') {
+    // Голос/аудио/видео: id для транскрипции в L2 (tgFileId есть только у транскрибируемых — ≤20MB,
+    // не gif), uid — для дедупа повторных пересылок, title — «Исполнитель — Трек» из тегов аудио.
+    const ref = mediaFileRef(msg);
+    tgFileId = ref.tgFileId;
+    tgFileUniqueId = ref.tgFileUniqueId;
+    title = ref.title;
+    sttSkipReason = ref.tooBig ? 'too_big' : undefined;
   }
 
   // Дедуп ДО вставки (§ тезис): тот же пост уже сохранён → не задваиваем, возвращаем существующий.
@@ -79,7 +88,9 @@ export async function saveItem(
   // Картинки — единая полка (§3.4), без LLM-классификации. Остальное — по дешёвому сигналу.
   const category = det.type === 'image' ? IMAGE_SHELF : await classify(item, userId);
   // ack передаём только для одиночных пересылок — тогда L2 сможет отредактировать «Положил…» при сбое.
-  await enqueueProcess(item.id, category, ack);
+  // sttSkipReason едет в payload (не вычисляется в L2): там по отсутствию tgFileId большой файл
+  // неотличим от gif — gif получил бы ложное предупреждение «сохранил без расшифровки».
+  await enqueueProcess(item.id, category, ack, false, sttSkipReason);
   return { item, category, duplicate: false };
 }
 

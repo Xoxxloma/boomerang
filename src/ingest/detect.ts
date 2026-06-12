@@ -35,6 +35,43 @@ export function hasMeaningfulCaption(text: string | undefined | null): boolean {
   return t.split(/\s+/).filter(Boolean).length >= 3;
 }
 
+/** Bot API отдаёт ботам файлы только до 20MB — больше getFile бросает «file is too big». */
+export const TG_FILE_LIMIT_BYTES = 20 * 1024 * 1024;
+
+export interface MediaFileRef {
+  /** Есть ТОЛЬКО если файл реально скачиваем и транскрибируем (≤20MB, не gif) — это L2-гейт STT. */
+  tgFileId?: string;
+  /** Стабильный id — всегда, когда есть медиа: нужен для дедупа повторных пересылок. */
+  tgFileUniqueId?: string;
+  /** Метаданные трека «Исполнитель — Название» (ID3-теги msg.audio) — дешёвый сигнал и заголовок. */
+  title?: string;
+  /** Файл заведомо не скачать (>20MB) — честно предупредим, что сохранили без расшифровки. */
+  tooBig?: boolean;
+}
+
+/**
+ * Ссылка на файл голосового/аудио/видео для сохранения в item. Отсутствие tgFileId кодирует
+ * «транскрибировать нечего/нельзя»: у animation (gif) нет аудиодорожки, файл >20MB Bot API не отдаст
+ * (его отличаем флагом tooBig — для честного предупреждения). Чистая функция — тестируется без БД.
+ */
+export function mediaFileRef(msg: Message): MediaFileRef {
+  if (msg.animation) return { tgFileUniqueId: msg.animation.file_unique_id };
+  const media = msg.voice ?? msg.audio ?? msg.video ?? msg.video_note;
+  if (!media) return {};
+
+  const ref: MediaFileRef = { tgFileUniqueId: media.file_unique_id };
+  if (msg.audio) {
+    const track = [msg.audio.performer, msg.audio.title].filter(Boolean).join(' — ');
+    if (track) ref.title = track;
+  }
+  if (media.file_size != null && media.file_size > TG_FILE_LIMIT_BYTES) {
+    ref.tooBig = true; // tgFileId намеренно не отдаём: getFile всё равно бросит
+    return ref;
+  }
+  ref.tgFileId = media.file_id;
+  return ref;
+}
+
 /** Человекочитаемый источник пересылки из forward_origin. */
 function originName(msg: Message): string | undefined {
   const o = msg.forward_origin;

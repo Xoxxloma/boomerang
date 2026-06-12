@@ -1,10 +1,9 @@
 import type { Bot } from 'grammy';
 import { bufferAlbumPart } from '../../ingest/album.js';
-import { saveItem, label, duplicateText } from '../../ingest/save.js';
+import { saveItem, duplicateText } from '../../ingest/save.js';
 import { maybeBufferBurst } from '../../import/burst.js';
 import { isExportDocument, handleExport } from '../../import/export.js';
-import { IMAGE_SHELF } from '../../cluster/assign.js';
-import { fixKeyboard, sourceKeyboard } from './callbacks.js';
+import { sourceKeyboard } from './callbacks.js';
 
 /**
  * Приём контента — Level 1 (синхронно, §5):
@@ -45,20 +44,19 @@ export function registerIngest(bot: Bot): void {
         await ctx.api.editMessageText(ack.chat.id, ack.message_id, duplicateText(item, category), {
           reply_markup: sourceKeyboard(item),
         });
-      } else if (category === IMAGE_SHELF) {
-        // Картинки детерминированно идут на полку «Изображения» — сразу финал, без «предварительно».
-        await ctx.api.editMessageText(ack.chat.id, ack.message_id, `✅ Положил в ${label(item.title, category)}`, {
-          reply_markup: fixKeyboard(item.id),
-        });
       } else {
         // L1-метка предварительна: реальную полку определит L2 (assignCluster по эмбеддингу) и
         // финализирует это сообщение шагом «Положил в …» с кнопками (см. queue/worker.ts).
         // БЕЗ клавиатуры: «Не та тема»/«Удалить» появятся только на финале — пока тема не определена,
         // править/лочить категорию нечего (заодно нет гонки lock-до-L2).
+        // Голос/видео с файлом под транскрипцию — честный статус «расшифровываю» (L2 дольше обычного).
+        const transcribing = (item.type === 'voice' || item.type === 'video') && item.tgFileId;
         await ctx.api.editMessageText(
           ack.chat.id,
           ack.message_id,
-          `🔖 Принял, определяю тему… (предварительно «${category}»)`,
+          transcribing
+            ? `🎙 Принял, расшифровываю и определяю тему… (предварительно «${category}»)`
+            : `🔖 Принял, определяю тему… (предварительно «${category}»)`,
         );
       }
     } catch (err) {

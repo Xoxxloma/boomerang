@@ -11,6 +11,7 @@ import {
   hydrateUsage,
   nextResetUtc,
   recordUsage,
+  recordSttSeconds,
   snapshotUsage,
   utcDayKey,
 } from '../src/ai/usage.js';
@@ -63,6 +64,30 @@ describe('recordUsage / getSpend', () => {
     __setClockForTest(() => new Date('2026-06-10T00:01:00Z')); // следующий день
     expect(getUserSpendToday(7)).toBe(0);
     expect(getGlobalSpendToday()).toBe(0);
+  });
+});
+
+describe('recordSttSeconds', () => {
+  it('плюсует стоимость по минутам аудио в per-user и global (cost-only, без токенов)', () => {
+    recordSttSeconds(42, 120); // 2 минуты
+    const expected = 2 * tuning.sttPricePerMinute;
+    expect(getUserSpendToday(42)).toBeCloseTo(expected, 10);
+    expect(getGlobalSpendToday()).toBeCloseTo(expected, 10);
+    // токен-поля не трогаем — в снимке только costUsd
+    const row = snapshotUsage().find((r) => r.userId === 42);
+    expect(row).toMatchObject({ llmPromptTokens: 0, llmCompletionTokens: 0, embeddingTokens: 0 });
+  });
+
+  it('userId=null — только в global', () => {
+    recordSttSeconds(null, 60);
+    expect(getGlobalSpendToday()).toBeCloseTo(tuning.sttPricePerMinute, 10);
+    expect(getUserSpendToday(42)).toBe(0);
+  });
+
+  it('расход STT двигает enforce к персональному потолку', () => {
+    const seconds = ((tuning.userDailyCostCeilingUsd / tuning.sttPricePerMinute) + 1) * 60;
+    recordSttSeconds(7, seconds);
+    expect(() => enforce(7)).toThrow(QuotaExceededError);
   });
 });
 

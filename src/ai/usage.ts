@@ -94,6 +94,40 @@ export function recordUsage(
   }
 }
 
+/**
+ * Учесть STT-вызов (транскрипция): биллинг по секундам аудио, не по токенам — плюсуем ТОЛЬКО
+ * стоимость (cost-only) в дневные бакеты. Токен-поля не трогаем, поэтому персистентность
+ * (snapshot/hydrate → usage_daily.cost_usd) и потолки/breaker работают без изменений схемы.
+ */
+export function recordSttSeconds(userId: number | null, seconds: number): void {
+  rollIfNeeded();
+  const cost = (seconds / 60) * tuning.sttPricePerMinute;
+  globalBucket.costUsd += cost;
+  if (userId != null && userId !== 0) {
+    const b = perUser.get(userId) ?? emptyBucket();
+    b.costUsd += cost;
+    perUser.set(userId, b);
+  }
+}
+
+/**
+ * Учесть vision-вызов (аннотация картинки): токены плюсуем в llm-поля бакета (отдельных полей под
+ * vision в usage_daily нет и не нужно — модель та же семья), стоимость — по vision-ценам из tuning.
+ * prompt_tokens ответа OpenAI уже включает image-токены — ничего не пересчитываем.
+ */
+export function recordVisionUsage(userId: number | null, promptTokens: number, completionTokens: number): void {
+  rollIfNeeded();
+  const cost =
+    (promptTokens / 1000) * tuning.visionPricePromptPer1k +
+    (completionTokens / 1000) * tuning.visionPriceCompletionPer1k;
+  addToBucket(globalBucket, 'llm', promptTokens, completionTokens, cost);
+  if (userId != null && userId !== 0) {
+    const b = perUser.get(userId) ?? emptyBucket();
+    addToBucket(b, 'llm', promptTokens, completionTokens, cost);
+    perUser.set(userId, b);
+  }
+}
+
 export function getUserSpendToday(userId: number): number {
   rollIfNeeded();
   return perUser.get(userId)?.costUsd ?? 0;

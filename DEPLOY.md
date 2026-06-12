@@ -29,7 +29,7 @@ cd /opt/boomerang
 #    BOT_TOKEN=<токен прод-бота>
 #    DATABASE_URL=<Neon direct endpoint>?sslmode=require
 #    DATABASE_SSL=true
-#    OPENAI_API_KEY=... (+ остальные ключи)
+#    OPENAI_API_KEY=... STT_API_KEY=... ADMIN_IDS=... (все поля обязательны)
 nano .env.production
 
 # 3. systemd-сервис: ставим и включаем (enable без --now — запустит уже deploy.sh в шаге 4)

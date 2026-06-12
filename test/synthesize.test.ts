@@ -42,4 +42,11 @@ describe('snippet', () => {
     expect(s).toContain('содержимое не прочитано');
     expect(s.endsWith('(https://avito.ru/x)')).toBe(true);
   });
+
+  it('голосовое с транскриптом получает документный потолок (длинный войс не режется до 600)', () => {
+    const transcript = 'а'.repeat(1500) + ' МАРКЕР_ХВОСТА';
+    const s = snippet({ ...doc, type: 'voice', title: 'Про повышение', transcript } as Item);
+    expect(s).toContain('МАРКЕР_ХВОСТА'); // при коротком cap (600) хвост бы отрезало
+    expect(s).not.toContain('содержимое не прочитано'); // транскрипт = настоящее содержимое
+  });
 });

@@ -4,13 +4,12 @@ import { enforce, recordUsage } from './usage.js';
 import { alertIfUsageMissing } from '../bot/alerts.js';
 
 /**
- * Эмбеддинг-клиент. В v0.1 — OpenAI text-embedding-3-small (1536 dim).
- * Провайдер зафиксирован: смена = переэмбеддить всю базу.
+ * Эмбеддинг-клиент: OpenAI text-embedding-3-small (1536 dim).
+ * Модель зафиксирована константой: смена = переэмбеддить всю базу.
  */
-const client = new OpenAI({
-  apiKey: env.EMBEDDING_API_KEY,
-  baseURL: env.EMBEDDING_BASE_URL,
-});
+const EMBEDDING_MODEL = 'text-embedding-3-small';
+
+const client = new OpenAI({ apiKey: env.OPENAI_API_KEY });
 
 /** Эмбеддинг одного текста. userId — для бюджет-гардов (персональный потолок + атрибуция). */
 export async function embed(text: string, userId?: number): Promise<number[]> {
@@ -27,7 +26,7 @@ export async function embedBatch(texts: string[], userId?: number): Promise<numb
   const input = texts.map((t) => (t.trim().length > 0 ? t : ' '));
 
   const res = await client.embeddings.create({
-    model: env.EMBEDDING_MODEL,
+    model: EMBEDDING_MODEL,
     input,
   });
 
@@ -42,7 +41,7 @@ export async function embedBatch(texts: string[], userId?: number): Promise<numb
       if (d.embedding.length !== EMBEDDING_DIM) {
         throw new Error(
           `Размерность эмбеддинга ${d.embedding.length} ≠ ожидаемой ${EMBEDDING_DIM}. ` +
-            `Проверь EMBEDDING_MODEL.`,
+            `Проверь модель ${EMBEDDING_MODEL} (embeddings.ts).`,
         );
       }
       return d.embedding as number[];

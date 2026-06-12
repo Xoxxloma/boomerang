@@ -34,12 +34,25 @@ export const tuning = {
   proactiveDailyCap: num('PROACTIVE_DAILY_CAP', 2),
 
   // --- Бюджет-гарды на LLM-расходы (учёт стоимости, потолки, breaker). Цены $/1k токенов. ---
-  /** Цена входных токенов LLM $/1k. Дефолт — gpt-4o-mini; СВЕРИТЬ с актуальным прайсом LLM_MODEL. */
+  /** Цена входных токенов LLM $/1k (gpt-4o-mini); СВЕРИТЬ при смене модели в ai/llm.ts. */
   llmPricePromptPer1k: num('LLM_PRICE_PROMPT_PER_1K', 0.00015),
   /** Цена выходных токенов LLM $/1k (gpt-4o-mini). */
   llmPriceCompletionPer1k: num('LLM_PRICE_COMPLETION_PER_1K', 0.0006),
   /** Цена эмбеддингов $/1k (text-embedding-3-small). */
   embeddingPricePer1k: num('EMBEDDING_PRICE_PER_1K', 0.00002),
+  /** Цена транскрипции $/минута аудио — Groq whisper-large-v3-turbo ($0.04/час);
+   *  СВЕРИТЬ при смене модели/провайдера в ai/stt.ts. */
+  sttPricePerMinute: num('STT_PRICE_PER_MINUTE', 0.000667),
+  /** Цена входных токенов vision $/1k (gpt-4o-mini; prompt_tokens ответа уже включает image-токены,
+   *  low detail ≈ 2.8k). СВЕРИТЬ при смене модели в ai/vision.ts. */
+  visionPricePromptPer1k: num('VISION_PRICE_PROMPT_PER_1K', 0.00015),
+  /** Цена выходных токенов vision $/1k (gpt-4o-mini). */
+  visionPriceCompletionPer1k: num('VISION_PRICE_COMPLETION_PER_1K', 0.0006),
+  /** Потолок выходных токенов vision-аннотации (описание + категория + заголовок). */
+  visionMaxTokens: num('VISION_MAX_TOKENS', 250),
+  /** Средняя уверенность tesseract (0–100), НИЖЕ которой OCR-текст считаем мусором из текстур
+   *  (фото без текста) и не пишем в индекс — иначе шум течёт в эмбеддинг и в LLM-синтез. */
+  ocrMinConfidence: num('OCR_MIN_CONFIDENCE', 40),
   /** Дефолтный потолок выходных токенов на один chat-вызов (worst-case bound). */
   llmMaxTokensDefault: num('LLM_MAX_TOKENS', 700),
   /** Потолок токенов на синтез ответа (режим 1). */

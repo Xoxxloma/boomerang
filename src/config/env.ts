@@ -2,27 +2,22 @@ import 'dotenv/config';
 import { z } from 'zod';
 
 /**
- * Единая точка чтения и валидации окружения.
- * В v0.1 LLM и эмбеддинги идут на OpenAI (бот хостится на зарубежном VPS, гео-доступ ок).
- * Если отдельные LLM_/EMBEDDING_ ключи не заданы — падаем на общий OPENAI_API_KEY.
- * Провайдеры OpenAI-совместимы: смена = *_BASE_URL + *_MODEL в .env, без правок кода.
+ * Единая точка чтения и валидации окружения. Все поля ОБЯЗАТЕЛЬНЫ, фолбэков и
+ * опциональных ключей нет: пустое поле — ошибка на старте, а не молча выключенная фича.
+ * OPENAI_API_KEY питает LLM, эмбеддинги и vision; STT_API_KEY — Groq whisper
+ * (ключ OpenAI туда не подходит). Базовые URL и имена моделей — константы в src/ai/*.
  */
 const raw = {
   BOT_TOKEN: process.env.BOT_TOKEN,
   DATABASE_URL: process.env.DATABASE_URL,
-  // Включать SSL для подключения к БД (облако: Neon/Supabase требуют). Локальный docker — без SSL.
+  // Включать SSL для подключения к БД (облако: Neon/Supabase требуют). Локальный docker — false.
   DATABASE_SSL: process.env.DATABASE_SSL,
+  // LLM + эмбеддинги + vision (api.openai.com).
   OPENAI_API_KEY: process.env.OPENAI_API_KEY,
-  // Кому слать алерты о критичных сбоях (бюджет-гард ослеп, регидрация упала). CSV из tg-id. Пусто → молчим.
+  // STT (транскрипция голосовых/аудио/видео): Groq whisper, НЕ OpenAI.
+  STT_API_KEY: process.env.STT_API_KEY,
+  // Кому слать алерты о критичных сбоях (бюджет-гард ослеп, регидрация упала). CSV из tg-id.
   ADMIN_IDS: process.env.ADMIN_IDS,
-
-  LLM_API_KEY: process.env.LLM_API_KEY || process.env.OPENAI_API_KEY,
-  LLM_BASE_URL: process.env.LLM_BASE_URL || 'https://api.openai.com/v1',
-  LLM_MODEL: process.env.LLM_MODEL || 'gpt-4o-mini',
-
-  EMBEDDING_API_KEY: process.env.EMBEDDING_API_KEY || process.env.OPENAI_API_KEY,
-  EMBEDDING_BASE_URL: process.env.EMBEDDING_BASE_URL || 'https://api.openai.com/v1',
-  EMBEDDING_MODEL: process.env.EMBEDDING_MODEL || 'text-embedding-3-small',
 };
 
 const schema = z.object({
@@ -33,20 +28,11 @@ const schema = z.object({
     .optional()
     .default('false')
     .transform((v) => v === 'true'),
-
-  LLM_API_KEY: z.string().min(1, 'LLM_API_KEY или OPENAI_API_KEY обязателен'),
-  LLM_BASE_URL: z.string().url(),
-  LLM_MODEL: z.string().min(1),
-
-  EMBEDDING_API_KEY: z.string().min(1, 'EMBEDDING_API_KEY или OPENAI_API_KEY обязателен'),
-  EMBEDDING_BASE_URL: z.string().url(),
-  EMBEDDING_MODEL: z.string().min(1),
-
-  // Опционально: список tg-id админов через запятую для алертов. Пусто/не задано → [] (алерты молчат).
+  OPENAI_API_KEY: z.string().min(1, 'OPENAI_API_KEY обязателен (LLM + эмбеддинги + vision)'),
+  STT_API_KEY: z.string().min(1, 'STT_API_KEY обязателен (Groq whisper, https://console.groq.com)'),
   ADMIN_IDS: z
     .string()
-    .optional()
-    .default('')
+    .min(1, 'ADMIN_IDS обязателен (tg-id админов через запятую)')
     .transform((s) =>
       s
         .split(',')

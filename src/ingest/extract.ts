@@ -103,7 +103,8 @@ export function buildClassifySignal(it: Indexable): string {
     const slug = noRealTitle && it.url ? urlSlugText(it.url) : null;
     parts = [caption, it.title, it.description, slug];
   } else {
-    parts = [it.title, it.description, it.rawText];
+    // transcript — содержимое голосового/видео (после L2): для них это и есть главный сигнал.
+    parts = [it.title, it.description, it.rawText, it.transcript];
   }
   const body =
     parts

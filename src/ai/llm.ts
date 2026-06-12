@@ -5,13 +5,12 @@ import { enforce, recordUsage } from './usage.js';
 import { alertIfUsageMissing } from '../bot/alerts.js';
 
 /**
- * LLM-клиент на OpenAI SDK. В v0.1 — OpenAI gpt-4o-mini.
- * Клиент OpenAI-совместим: смена на DeepSeek/Qwen = LLM_BASE_URL + LLM_MODEL в .env, без кода.
+ * LLM-клиент на OpenAI SDK (api.openai.com). Модель — константа: при смене
+ * сверить цены llmPrice* в tuning.ts, иначе учёт расхода «поедет».
  */
-const client = new OpenAI({
-  apiKey: env.LLM_API_KEY,
-  baseURL: env.LLM_BASE_URL,
-});
+const LLM_MODEL = 'gpt-4o-mini';
+
+const client = new OpenAI({ apiKey: env.OPENAI_API_KEY });
 
 export interface ChatOptions {
   system?: string;
@@ -34,7 +33,7 @@ export async function chat(prompt: string, opts: ChatOptions = {}): Promise<stri
   messages.push({ role: 'user', content: prompt });
 
   const res = await client.chat.completions.create({
-    model: env.LLM_MODEL,
+    model: LLM_MODEL,
     messages,
     temperature: opts.temperature ?? 0.3,
     max_tokens: opts.maxTokens ?? tuning.llmMaxTokensDefault,

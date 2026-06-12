@@ -11,11 +11,19 @@ import type { Item } from '../src/db/schema.js';
 // чтобы проверить ТОЛЬКО гейт идемпотентности: повторный прогон джобы не переэмбеддит запись, у которой
 // вектор уже есть — иначе платный эмбеддинг списался бы дважды (бюджет-гард). Стиль — как в parseQuery.test.
 vi.mock('../src/ai/embeddings.js', () => ({ embed: vi.fn() }));
+// Сценарии — про эмбеддинг/документы; STT-ветка (voice/video) тут не задевается,
+// своя ветка тестируется в process-transcribe.test.ts.
+vi.mock('../src/ai/stt.js', () => ({ transcribe: vi.fn() }));
+// Vision-ветка (image) тут не задевается (см. process-vision.test.ts), но модуль тянет env — мокаем.
+vi.mock('../src/ai/vision.js', () => ({ describeImage: vi.fn() }));
 vi.mock('../src/db/items.js', () => ({
   getItem: vi.fn(),
+  setDescription: vi.fn(),
   setEmbedding: vi.fn(),
   setOcrText: vi.fn(),
   setRawText: vi.fn(),
+  setTranscript: vi.fn(),
+  setTitle: vi.fn(),
   markIndexed: vi.fn(),
 }));
 vi.mock('../src/ingest/extract.js', () => ({ buildIndexText: () => 'index text' }));
@@ -25,7 +33,7 @@ vi.mock('../src/cluster/assign.js', () => ({
   IMAGE_SHELF: 'Изображения',
 }));
 vi.mock('../src/retrieval/proactive.js', () => ({ maybeSurface: vi.fn() }));
-vi.mock('../src/ingest/classify.js', () => ({ classify: vi.fn() }));
+vi.mock('../src/ingest/classify.js', () => ({ classify: vi.fn(), classifyWithTitle: vi.fn() }));
 vi.mock('../src/content/ocr.js', () => ({ ocrImage: vi.fn() }));
 vi.mock('../src/content/documents.js', () => ({ readDocument: vi.fn() }));
 vi.mock('../src/content/files.js', () => ({ withTempFile: vi.fn() }));

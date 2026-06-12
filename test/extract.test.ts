@@ -44,6 +44,24 @@ describe('buildClassifySignal', () => {
     expect(s).not.toContain('ШУМ OCR');
   });
 
+  it('голосовое: transcript входит в сигнал (для него это главный контент)', () => {
+    const s = buildClassifySignal({
+      ...base,
+      type: 'voice',
+      url: null,
+      title: null,
+      description: null,
+      rawText: null,
+      transcript: 'приходил Иванов спрашивал про повышение',
+    });
+    expect(s).toContain('приходил Иванов');
+  });
+
+  it('у ссылок transcript в сигнал не подмешивается (link-ветка не менялась)', () => {
+    const s = buildClassifySignal({ ...base, transcript: 'НЕ ДОЛЖНО ПОПАСТЬ' });
+    expect(s).not.toContain('НЕ ДОЛЖНО ПОПАСТЬ');
+  });
+
   it('добавляет имя источника первым, помечая его явно', () => {
     const s = buildClassifySignal({ ...base, sourceChat: 'SL4M & Counter-Strike' });
     expect(s).toContain('Источник (канал/автор): SL4M & Counter-Strike');

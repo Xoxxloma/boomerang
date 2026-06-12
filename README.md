@@ -27,8 +27,8 @@ docker compose up -d
 # 2. Зависимости
 npm install
 
-# 3. Настроить .env (скопировать из .env.example) — нужны:
-#    BOT_TOKEN (у @BotFather) и OPENAI_API_KEY
+# 3. Настроить .env (скопировать из .env.example) — ВСЕ поля обязательны:
+#    BOT_TOKEN (у @BotFather), OPENAI_API_KEY, STT_API_KEY (Groq), ADMIN_IDS
 cp .env.example .env   # затем вписать ключи
 
 # 4. Применить миграции
