@@ -75,6 +75,10 @@ export async function maybeSurface(item: Item, result: AssignResult): Promise<vo
       // Созревание — раз на тему, дневным лимитом НЕ режем. Кнопка «📋 Свести» вместо текста /find.
       // В тексте — число СОДЕРЖАТЕЛЬНЫХ (не обещаем 5 материалов, когда читаемых 3).
       const text = `У тебя накопилось ${contentful} материалов в теме «${cluster.name}». Свести в один ответ?`;
+      // Сначала ОТПРАВКА, потом маркировка/лог: если send упал (403 — юзер заблокировал бота, сеть),
+      // maturedAt НЕ выставится → одноразовое «тема созрела» не потеряется, дойдёт со следующим item.
+      // Риск нового порядка (send прошёл, setClusterMatured упал → повтор) безобиднее молчаливой потери.
+      await send(item.userId, text, null, mode, cluster.id);
       await setClusterMatured(cluster.id);
       await logSurfacing({
         userId: item.userId,
@@ -82,7 +86,6 @@ export async function maybeSurface(item: Item, result: AssignResult): Promise<vo
         clusterId: cluster.id,
         triggerItemId: item.id,
       });
-      await send(item.userId, text, null, mode, cluster.id);
       return;
     }
 
@@ -103,6 +106,9 @@ export async function maybeSurface(item: Item, result: AssignResult): Promise<vo
     if ((await countSurfacedToday(item.userId)) >= tuning.proactiveDailyCap) return;
 
     const text = `Кстати, по этой теме ты уже сохранял: ${titleOf(old)}`;
+    // Сначала ОТПРАВКА, потом лог: упавший send (403/сеть) не должен ни «съедать» дневной лимит
+    // резонанса (countSurfacedToday считает логи), ни помечать old как недавно показанный.
+    await send(item.userId, text, old, mode);
     await logSurfacing({
       userId: item.userId,
       kind: 'resonance',
@@ -110,7 +116,6 @@ export async function maybeSurface(item: Item, result: AssignResult): Promise<vo
       clusterId: cluster.id,
       triggerItemId: item.id,
     });
-    await send(item.userId, text, old, mode);
   } catch (err) {
     console.error('maybeSurface error:', err);
   }

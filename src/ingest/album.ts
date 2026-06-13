@@ -77,3 +77,24 @@ export async function flushAlbum(api: Api, gid: string): Promise<void> {
   await db.delete(albumPart).where(eq(albumPart.mediaGroupId, gid));
   await db.delete(albumSession).where(eq(albumSession.mediaGroupId, gid));
 }
+
+/**
+ * Сбой флаша альбома (debounce-воркер исчерпал ретраи): правим ack-сообщение «Принял ✅» на честный
+ * статус, чтобы юзер не остался с ложным «сохранил». Части/сессия целы (flushAlbum при броске их не
+ * трогает), но автоматически они уже не дольются — просим переслать заново. Best-effort.
+ */
+export async function notifyAlbumFlushFailed(api: Api, gid: string): Promise<void> {
+  const [session] = await db
+    .select({ chatId: albumSession.ackChatId, msgId: albumSession.ackMessageId })
+    .from(albumSession)
+    .where(eq(albumSession.mediaGroupId, gid))
+    .limit(1);
+  if (!session?.chatId || !session?.msgId) return;
+  await api
+    .editMessageText(
+      session.chatId,
+      session.msgId,
+      '⚠️ Не смог сохранить этот альбом — перешли его, пожалуйста, ещё раз.',
+    )
+    .catch(() => {});
+}

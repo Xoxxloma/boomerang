@@ -12,6 +12,23 @@ const SEARCH_BUTTON = '🔍 Найти';
 /** Постоянная клавиатура с кнопкой поиска — ставится на /start. */
 export const searchReplyKeyboard = new Keyboard().text(SEARCH_BUTTON).resized().persistent();
 
+/** Лимит длины сообщения Telegram. Запас под перевод строк/заголовок при сборке итогового текста. */
+const TG_MSG_LIMIT = 4096;
+/** Потолок длины URL в строке списка: длинные ссылки (трекеры, токены) раздувают сообщение за лимит. */
+const URL_MAX = 120;
+
+/** Строка списка-источника: номер + имя + усечённый URL. Длинные URL рвут лимит Telegram (4096). */
+function listLine(it: Item, i: number): string {
+  if (!it.url) return `${i + 1}. ${sourceName(it)}`;
+  const url = it.url.length > URL_MAX ? `${it.url.slice(0, URL_MAX - 1)}…` : it.url;
+  return `${i + 1}. ${sourceName(it)} — ${url}`;
+}
+
+/** Собрать список строк в тело сообщения с префиксом, не превышая лимит Telegram. */
+function listBody(prefix: string, lines: string[]): string {
+  return `${prefix}\n${lines.join('\n')}`.slice(0, TG_MSG_LIMIT);
+}
+
 /** Приглашение ввести запрос: force_reply фокусирует поле ответа — пользователь сразу печатает. */
 async function promptSearch(ctx: Context): Promise<void> {
   await ctx.reply(SEARCH_PROMPT, {
@@ -21,12 +38,10 @@ async function promptSearch(ctx: Context): Promise<void> {
 
 /** Нумерованный список записей + кнопка-карточка на каждую (метаданные-режим, без синтеза). */
 async function replyWithList(ctx: Context, list: Item[], query: string): Promise<void> {
-  const lines = list.map(
-    (it, i) => `${i + 1}. ${sourceName(it)}${it.url ? ` — ${it.url}` : ''}`,
-  );
+  const lines = list.map((it, i) => listLine(it, i));
   const keyboard = new InlineKeyboard();
   list.forEach((it, i) => keyboard.text(`${i + 1} · ${sourceName(it)}`, `card:${it.id}`).row());
-  await ctx.reply(`Вот что нашёл по «${query}»:\n${lines.join('\n')}`, {
+  await ctx.reply(listBody(`Вот что нашёл по «${query}»:`, lines), {
     link_preview_options: { is_disabled: true },
     reply_markup: keyboard,
   });
@@ -131,11 +146,8 @@ export async function respondWithSynthesis(
   } catch (err) {
     // Синтез (LLM) упал — нашли, но не свели. Покажем хотя бы источники, а не пустоту.
     console.error('synthesize error:', err);
-    const list = hits
-      .slice(0, 8)
-      .map((h, i) => `${i + 1}. ${sourceName(h.item)}${h.item.url ? ` — ${h.item.url}` : ''}`)
-      .join('\n');
-    await ctx.reply(`Свести в ответ не вышло, но вот что нашёл по «${query}»:\n${list}`, {
+    const lines = hits.slice(0, 8).map((h, i) => listLine(h.item, i));
+    await ctx.reply(listBody(`Свести в ответ не вышло, но вот что нашёл по «${query}»:`, lines), {
       link_preview_options: { is_disabled: true },
     });
     return;

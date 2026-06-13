@@ -2,7 +2,7 @@ import { InlineKeyboard } from 'grammy';
 import { getBoss, Q_PROCESS, Q_FLUSH_ALBUM, Q_BURST_FLUSH, Q_PROCESS_DLQ } from './boss.js';
 import type { ProcessJob, FlushAlbumJob, BurstFlushJob } from './index.js';
 import { processItem, type ProcessResult } from './jobs/process.js';
-import { flushAlbum } from '../ingest/album.js';
+import { flushAlbum, notifyAlbumFlushFailed } from '../ingest/album.js';
 import { flushBurst, notifyBurstFlushFailed } from '../import/burst.js';
 import { getItem, itemDisplayName } from '../db/items.js';
 import { label } from '../ingest/save.js';
@@ -118,7 +118,21 @@ export async function startWorkers(): Promise<void> {
 
   await boss.work<FlushAlbumJob>(Q_FLUSH_ALBUM, { batchSize: 1 }, async (jobs) => {
     for (const job of jobs) {
-      await flushAlbum(getBotApi(), job.data.gid);
+      const { gid } = job.data;
+      try {
+        await flushAlbum(getBotApi(), gid);
+      } catch (err) {
+        // У Q_FLUSH_ALBUM нет DLQ: без этого падение флаша было «слепым» — части навсегда висят в
+        // album_part, а ack замер на «Принял ✅» (юзер думает, что альбом сохранён). Правим ack на
+        // честный статус + алерт админам. Части/сессия целы (flushAlbum при броске их не трогает).
+        console.error('album flush failed', { gid, err });
+        await notifyAlbumFlushFailed(getBotApi(), gid).catch(() => {});
+        void notifyAdmins(
+          'album-flush-failed',
+          `⚠️ Флаш альбома ${gid} упал. Части сохранены, но итог не доехал — проверь логи (сеть/БД).`,
+        );
+        throw err; // пробрасываем: pg-boss доретраит (retryLimit:2)
+      }
     }
   });
 

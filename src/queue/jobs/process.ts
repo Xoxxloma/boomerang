@@ -24,6 +24,25 @@ import { getBotApi } from '../../bot/api.js';
 /** Потолок длины текста на эмбеддинг (символы) — защита от лимита токенов на больших документах. */
 const MAX_EMBED_CHARS = 8000;
 
+/**
+ * Запись уже ОПЛАЧЕННОГО вектора с парой немедленных ретраев: транзиентный сбой БД (обрыв
+ * соединения) не должен выбрасывать вектор и заставлять ретрай джобы платить за embed() заново.
+ * Исчерпав попытки — пробрасываем (pg-boss доретраит весь джоб; гейт !emb тогда честно пересчитает).
+ */
+async function persistEmbedding(itemId: string, emb: number[]): Promise<void> {
+  let lastErr: unknown;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      await setEmbedding(itemId, emb);
+      return;
+    } catch (err) {
+      lastErr = err;
+      console.error('setEmbedding failed, retrying', { itemId, attempt, err });
+    }
+  }
+  throw lastErr;
+}
+
 /** Итог L2: имя реальной полки (для финализации «Положил в …») + честный флаг нечитаемого документа. */
 export interface ProcessResult {
   /** null — картинка/без кластера/cluster_locked: реконсилировать нечего. */
@@ -147,7 +166,7 @@ export async function processItem(itemId: string, seedCategory: string): Promise
   let emb: number[] | null = item.embedding ?? null;
   if (!emb && indexText.trim()) {
     emb = await embed(indexText, item.userId);
-    await setEmbedding(itemId, emb);
+    await persistEmbedding(itemId, emb);
   }
 
   // Имя реальной полки (для шага «Положил в …»). Картинки/без-кластера/locked → null (не финализируем).
