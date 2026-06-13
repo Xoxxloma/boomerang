@@ -2,6 +2,7 @@ import { InlineKeyboard, type Bot } from 'grammy';
 import { buildDigest } from '../../retrieval/digest.js';
 import { getProactiveMode } from '../../db/users.js';
 import { startImport } from '../../import/burst.js';
+import { env } from '../../config/env.js';
 
 const START_TEXT = [
   '*Boomerang* — как «Избранное», только умное.',
@@ -15,6 +16,7 @@ const START_TEXT = [
     'формат *JSON*, без медиа → пришли мне готовый файл `result.json`, разберу всё разом.',
   '',
   'Команды:',
+  '• /app — приложение: Карта, Поиск, Эхо',
   '• /find — поиск по сохранённому (или кнопка «🔍 Найти»)',
   '• /import — залить старое из «Избранного» одной пачкой',
   '• /folders — папки: категории и каналы',
@@ -22,12 +24,21 @@ const START_TEXT = [
   '• /settings — напоминания из архива',
 ].join('\n');
 
-/** Кнопка-CTA на приветственном экране: новичку искать нечего — предлагаем сразу залить старое. */
+/** Кнопка-CTA на приветственном экране: новичку искать нечего — предлагаем сразу залить старое.
+ *  Вход в Mini App — отдельной командой /app и кнопкой на reply-клавиатуре (не дублируем тут). */
 const startKeyboard = new InlineKeyboard().text('Залить из Избранного', 'import:start');
 
 export function registerCommands(bot: Bot): void {
   bot.command('start', async (ctx) => {
     await ctx.reply(START_TEXT, { parse_mode: 'Markdown', reply_markup: startKeyboard });
+  });
+
+  // Вход в Mini App из списка команд: команда — это текст, открыть вебапп можно только кнопкой,
+  // поэтому отвечаем инлайн-кнопкой web_app (один тап → приложение).
+  bot.command('app', async (ctx) => {
+    await ctx.reply('Boomerang — Карта, Поиск и Эхо в одном окне:', {
+      reply_markup: new InlineKeyboard().webApp('🪃 Открыть приложение', env.WEBAPP_URL),
+    });
   });
 
   // Режим массовой заливки: открыть сессию, в которую копятся все пересылки (см. import/burst.ts).

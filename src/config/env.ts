@@ -18,6 +18,10 @@ const raw = {
   STT_API_KEY: process.env.STT_API_KEY,
   // Кому слать алерты о критичных сбоях (бюджет-гард ослеп, регидрация упала). CSV из tg-id.
   ADMIN_IDS: process.env.ADMIN_IDS,
+  // Публичный https-URL Telegram Mini App (кнопка запуска из бота + проверка происхождения).
+  WEBAPP_URL: process.env.WEBAPP_URL,
+  // Локальный порт HTTP-сервера Mini App (за Caddy/обратным прокси).
+  WEB_PORT: process.env.WEB_PORT,
 };
 
 const schema = z.object({
@@ -39,6 +43,15 @@ const schema = z.object({
         .map((x) => Number(x.trim()))
         .filter((n) => Number.isFinite(n) && n > 0),
     ),
+  WEBAPP_URL: z
+    .string()
+    .url('WEBAPP_URL обязателен и должен быть https-URL (домен Mini App за Caddy)')
+    .refine((u) => u.startsWith('https://'), 'WEBAPP_URL должен начинаться с https:// (Telegram требует TLS)'),
+  WEB_PORT: z
+    .string()
+    .min(1, 'WEB_PORT обязателен (локальный порт HTTP-сервера Mini App)')
+    .transform((v) => Number(v))
+    .refine((n) => Number.isInteger(n) && n > 0 && n < 65536, 'WEB_PORT должен быть портом 1..65535'),
 });
 
 const parsed = schema.safeParse(raw);

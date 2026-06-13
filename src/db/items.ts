@@ -2,6 +2,7 @@ import { and, cosineDistance, desc, eq, inArray, isNotNull, isNull, ne, sql } fr
 import { db } from './client.js';
 import { items, type Item, type NewItem } from './schema.js';
 import { recomputeClusterStats } from './clusters.js';
+import { tuning } from '../config/tuning.js';
 
 /** Каналы/авторы (sourceChat) пользователя с числом записей — для просмотра «по каналу» (/folders). */
 export async function listChannels(userId: number): Promise<{ sourceChat: string; count: number }[]> {
@@ -249,6 +250,143 @@ export async function setDescription(id: string, description: string): Promise<v
 /** Заголовок записи (LLM-резюме транскрипта голосового/видео) — видим в выдаче/карточке. */
 export async function setTitle(id: string, title: string): Promise<void> {
   await db.update(items).set({ title }).where(eq(items.id, id));
+}
+
+/**
+ * Записи-«годовщины» для Эха (Mini App): созданные в ТОТ ЖЕ календарный день (месяц+день), что сегодня,
+ * но достаточно давно (createdAt < now() - minAgeDays) — «в этот день ты сохранял…». Свежие годовщины
+ * сверху. Молодой продукт может вернуть пусто — это честно (нет годовщин — нет секции).
+ */
+export async function listAnniversaryItems(
+  userId: number,
+  minAgeDays: number,
+  limit: number,
+): Promise<Item[]> {
+  return db
+    .select()
+    .from(items)
+    .where(
+      and(
+        eq(items.userId, userId),
+        sql`extract(month from ${items.createdAt}) = extract(month from now())`,
+        sql`extract(day from ${items.createdAt}) = extract(day from now())`,
+        sql`${items.createdAt} < now() - (${minAgeDays} || ' days')::interval`,
+      ),
+    )
+    .orderBy(desc(items.createdAt))
+    .limit(limit);
+}
+
+/**
+ * Недавно проиндексированные записи (есть embedding) — отправные точки pull-резонанса в Эхе: для каждой
+ * ищем старого соседа по кластеру. Только с clusterId (резонанс ищется внутри кластера). Свежие сверху.
+ */
+export async function listRecentIndexedItems(
+  userId: number,
+  days: number,
+  limit: number,
+): Promise<Item[]> {
+  return db
+    .select()
+    .from(items)
+    .where(
+      and(
+        eq(items.userId, userId),
+        isNotNull(items.embedding),
+        isNotNull(items.clusterId),
+        sql`${items.createdAt} > now() - (${days} || ' days')::interval`,
+      ),
+    )
+    .orderBy(desc(items.createdAt))
+    .limit(limit);
+}
+
+/** Направленный мост между кластерами: ca → cb. bridges — сколько записей ca имеют близкого соседа в cb. */
+export interface ClusterBridge {
+  ca: string;
+  cb: string;
+  /** Число записей кластера ca, у которых ближайший кросс-кластерный сосед (из cb) прошёл порог. */
+  bridges: number;
+  /** Максимальная item-похожесть среди этих пар — сила самой крепкой нити между темами. */
+  topSim: number;
+}
+
+/**
+ * Мосты между кластерами для «Созвездия»: ребро темы значит «темы реально делят нити», а не «их
+ * центроиды (усреднения) случайно рядом» — центроид теряет растворённую тему (кот в политическом посте).
+ * Для каждой проиндексированной записи берём top-K ближайших соседей ИЗ ДРУГИХ кластеров (hnsw-индекс
+ * items_embedding_idx), оставляем прошедших порог bridgeMinItemSim, агрегируем по направленной паре
+ * кластеров. Дедуп/схлопывание в неориентированные рёбра — на стороне вызывающего (web-api/map).
+ */
+export async function listClusterBridges(userId: number): Promise<ClusterBridge[]> {
+  const knn = tuning.bridgeKnn;
+  const minSim = tuning.bridgeMinItemSim;
+  // Raw SQL: оператор '<=>' (cosine distance) между ДВУМЯ vector-колонками + LATERAL — drizzle-builder не выражает.
+  const rows = (await db.execute(sql`
+    SELECT a.cluster_id AS ca,
+           n.cluster_id AS cb,
+           count(*)::int AS bridges,
+           max(1 - (a.embedding <=> n.embedding)) AS top_sim
+    FROM items a
+    CROSS JOIN LATERAL (
+      SELECT i.cluster_id, i.embedding
+      FROM items i
+      WHERE i.user_id = ${userId}
+        AND i.embedding IS NOT NULL
+        AND i.cluster_id IS NOT NULL
+        AND i.cluster_id <> a.cluster_id
+        AND i.id <> a.id
+      ORDER BY i.embedding <=> a.embedding
+      LIMIT ${knn}
+    ) n
+    WHERE a.user_id = ${userId}
+      AND a.embedding IS NOT NULL
+      AND a.cluster_id IS NOT NULL
+      AND (1 - (a.embedding <=> n.embedding)) >= ${minSim}
+    GROUP BY a.cluster_id, n.cluster_id
+  `)) as unknown as Array<{ ca: string; cb: string; bridges: number; top_sim: number }>;
+  return rows.map((r) => ({ ca: r.ca, cb: r.cb, bridges: Number(r.bridges), topSim: Number(r.top_sim) }));
+}
+
+/** Конкретная нить-мост: запись из кластера A перекликается с записью из кластера B (id + крепость). */
+export interface BridgePair {
+  aId: string;
+  bId: string;
+  similarity: number;
+}
+
+/**
+ * Записи, реально связывающие две темы — «нити» под ребром «Созвездия» (тап по связи). Для каждой
+ * записи кластера A находим близкие записи кластера B (item-level, тот же порог bridgeMinItemSim, что и
+ * у рёбер). Возвращаем сырые пары по убыванию крепости; дедуп/выбор репрезентативных — на стороне route
+ * (чтобы один «хаб»-пост не занял весь список). Кластеры обычно небольшие — попарный проход дёшев.
+ */
+export async function listBridgePairs(
+  userId: number,
+  clusterA: string,
+  clusterB: string,
+  candidateCap = 60,
+): Promise<BridgePair[]> {
+  const minSim = tuning.bridgeMinItemSim;
+  const rows = (await db.execute(sql`
+    SELECT a.id AS a_id, b.id AS b_id, 1 - (a.embedding <=> b.embedding) AS sim
+    FROM items a
+    JOIN items b ON b.user_id = a.user_id AND b.cluster_id = ${clusterB} AND b.embedding IS NOT NULL
+    WHERE a.user_id = ${userId} AND a.cluster_id = ${clusterA} AND a.embedding IS NOT NULL
+      AND 1 - (a.embedding <=> b.embedding) >= ${minSim}
+    ORDER BY sim DESC
+    LIMIT ${candidateCap}
+  `)) as unknown as Array<{ a_id: string; b_id: string; sim: number }>;
+  return rows.map((r) => ({ aId: r.a_id, bId: r.b_id, similarity: Number(r.sim) }));
+}
+
+/** Записи пользователя по списку id (батч) — для сборки нитей-мостов из сырых пар. Чужие отсекаем по userId. */
+export async function listItemsByIds(userId: number, ids: string[]): Promise<Item[]> {
+  if (ids.length === 0) return [];
+  return db
+    .select()
+    .from(items)
+    .where(and(eq(items.userId, userId), inArray(items.id, ids)));
 }
 
 /**

@@ -1,0 +1,16 @@
+# Boomerang Mini App — TLS-терминатор перед HTTP-сервером бота.
+# Caddy сам получает и продлевает сертификат Let's Encrypt (нужен публичный домен, указывающий на VPS,
+# и открытые порты 80/443). Домен здесь = WEBAPP_URL в .env; порт = WEB_PORT.
+#
+# Установка (Debian/Ubuntu): https://caddyserver.com/docs/install
+#   sudo cp deploy/Caddyfile /etc/caddy/Caddyfile   # подставив свой домен
+#   sudo systemctl reload caddy
+
+# Домен = WEBAPP_URL в .env. Тут используется бесплатный nip.io: хостнейм <IP>.nip.io
+# автоматически резолвится в этот IP — регистрировать домен не нужно, Let's Encrypt выдаёт
+# сертификат на него штатно. Свой брендовый домен — просто заменить строку ниже.
+147.45.152.170.nip.io {
+	encode zstd gzip
+	# Бот и API живут в одном процессе на WEB_PORT; long polling портов не слушает — конфликта нет.
+	reverse_proxy localhost:8787
+}

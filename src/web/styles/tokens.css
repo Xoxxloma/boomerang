@@ -1,0 +1,86 @@
+/*
+ * Boomerang Mini App — дизайн-токены (проработаны через impeccable).
+ * Метафора: созвездие/орбита. Тёплое/холодное двуединство — смысловая система, не декор:
+ *   холодный --star (teal) = накопленное/хранение, тёплый --beam (amber) = извлечение/возврат.
+ * Тема переключается атрибутом [data-theme] из Telegram color_scheme. Карта всегда «космос».
+ */
+
+:root {
+  /* --- Бренд-константы (идентичность, не зависят от темы) --- */
+  --beam: oklch(0.78 0.15 75); /* тёплый луч — извлечение, акцент */
+  --beam-strong: oklch(0.72 0.15 72); /* фон CTA (белый текст поверх) */
+  --beam-ink: oklch(0.99 0 0); /* текст на beam */
+  --beam-dim: oklch(0.78 0.15 75 / 0.16); /* гало/подсветка возврата */
+  --star: oklch(0.74 0.105 195); /* холодная звезда — связи, структура */
+  --star-dim: oklch(0.74 0.105 195 / 0.14); /* заливка выбранного чипа (низкая альфа) */
+
+  /* --- Космос (Карта всегда; база тёмной темы) --- */
+  --space-0: oklch(0.16 0.025 275);
+  --space-1: oklch(0.21 0.028 275);
+  --space-2: oklch(0.26 0.03 275);
+  --space-hairline: oklch(0.34 0.025 275);
+  --starlight: oklch(0.96 0.01 250);
+  --starlight-muted: oklch(0.72 0.02 255);
+
+  /* --- Спейсинг (4-base), радиусы --- */
+  --s1: 4px;
+  --s2: 8px;
+  --s3: 12px;
+  --s4: 16px;
+  --s6: 24px;
+  --s8: 32px;
+  --s12: 48px;
+  --s16: 64px;
+  --r-card: 14px;
+  --r-sheet: 18px;
+  --r-pill: 999px;
+
+  /* --- z-index (семантическая шкала) --- */
+  --z-canvas: 0;
+  --z-header: 10;
+  --z-tabbar: 20;
+  --z-backdrop: 40;
+  --z-sheet: 50;
+  --z-toast: 60;
+
+  /* --- Движение --- */
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1); /* ~ ease-out-expo */
+  --dur-1: 140ms;
+  --dur-2: 260ms;
+  --dur-3: 440ms;
+
+  /* --- Типографика --- */
+  --font-ui: 'Golos Text', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+}
+
+/* Тёмная тема (по умолчанию) — космос несёт бренд. */
+:root,
+[data-theme='dark'] {
+  color-scheme: dark;
+  --bg: var(--space-0);
+  --surface: var(--space-1);
+  --surface-2: var(--space-2);
+  --hairline: var(--space-hairline);
+  --ink: var(--starlight);
+  --muted: var(--starlight-muted);
+  --accent: var(--star); /* линии/кольца/иконки */
+  --accent-soft: var(--star-dim);
+  --link: var(--star);
+  --scrim: oklch(0.1 0.02 275 / 0.62);
+}
+
+/* Светлая тема — чистый нативный хром; бренд несут beam/star + типографика. */
+[data-theme='light'] {
+  color-scheme: light;
+  --bg: oklch(1 0 0);
+  --surface: oklch(0.978 0.004 255);
+  --surface-2: oklch(0.955 0.006 255);
+  --hairline: oklch(0.9 0.006 260);
+  --ink: oklch(0.2 0.02 270);
+  --muted: oklch(0.49 0.018 260);
+  --accent: oklch(0.55 0.11 200); /* читаемый холодный акцент на белом */
+  --accent-soft: oklch(0.55 0.11 200 / 0.1);
+  --link: oklch(0.52 0.12 235);
+  --scrim: oklch(0.2 0.02 270 / 0.38);
+}

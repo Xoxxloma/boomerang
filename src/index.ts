@@ -7,6 +7,7 @@ import { startBoss, stopBoss } from './queue/boss.js';
 import { startWorkers } from './queue/worker.js';
 import { rehydrateToday, flushToday } from './db/usage.js';
 import { notifyAdmins } from './bot/alerts.js';
+import { startWebServer } from './web-api/server.js';
 
 /** Как часто сбрасывать дневной учёт расхода в БД (мс) — чтобы рестарт не обнулял лимиты. */
 const USAGE_FLUSH_INTERVAL_MS = 60_000;
@@ -17,6 +18,7 @@ async function main() {
 
   // Меню команд в клиенте Telegram (кнопка «/» и список). Без этого команд не видно.
   await bot.api.setMyCommands([
+    { command: 'app', description: 'Приложение: Карта, Поиск, Эхо' },
     { command: 'find', description: 'Поиск по сохранённому' },
     { command: 'import', description: 'Залить много старого из «Избранного»' },
     { command: 'folders', description: 'Папки: категории и каналы' },
@@ -24,6 +26,11 @@ async function main() {
     { command: 'settings', description: 'Напоминания из архива' },
     { command: 'start', description: 'О боте' },
   ]);
+
+  // Кнопка-меню рядом с полем ввода = СПИСОК КОМАНД (дефолт Telegram). В Mini App входят с постоянной
+  // reply-клавиатуры (кнопка «🪃 Приложение», см. search.ts) и из /start — так остаются И команды, И вебапп
+  // (одна кнопка-меню не может быть сразу и тем, и другим). Сбрасываем возможный прежний web_app-режим.
+  await bot.api.setChatMenuButton({ menu_button: { type: 'commands' } });
 
   // Профиль бота: текст на пустом экране чата (description) и в карточке (short_description).
   await bot.api.setMyDescription(
@@ -60,6 +67,9 @@ async function main() {
     flushToday().catch((err) => console.error('usage flush error:', err));
   }, USAGE_FLUSH_INTERVAL_MS);
 
+  // HTTP-сервер Mini App (Hono) — в том же процессе; бот на long polling портов не слушает.
+  const webServer = startWebServer();
+
   // @grammyjs/runner — конкурентная обработка апдейтов.
   const runner = run(bot);
   console.log('🪃 Boomerang запущен');
@@ -67,6 +77,7 @@ async function main() {
   const stop = async () => {
     console.log('\nОстанавливаюсь…');
     if (runner.isRunning()) await runner.stop();
+    webServer.close();
     clearInterval(usageFlushTimer);
     await flushToday().catch(() => {}); // финальный флаш учёта, чтобы не потерять день
     await stopBoss().catch(() => {}); // дождаться текущих L2-задач

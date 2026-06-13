@@ -1,4 +1,5 @@
 import { InlineKeyboard, Keyboard, type Bot, type Context } from 'grammy';
+import { env } from '../../config/env.js';
 import { search, listByFilter, type SearchHit } from '../../retrieval/search.js';
 import { parseQuery } from '../../retrieval/parseQuery.js';
 import { synthesize, extractCitedIndices, sourceName } from '../../retrieval/synthesize.js';
@@ -9,8 +10,16 @@ import type { Item } from '../../db/schema.js';
 const SEARCH_PROMPT = '🔍 Что ищем? Напиши запрос ответом на это сообщение.';
 /** Подпись постоянной кнопки поиска (reply-клавиатура). */
 const SEARCH_BUTTON = '🔍 Найти';
-/** Постоянная клавиатура с кнопкой поиска — ставится на /start. */
-export const searchReplyKeyboard = new Keyboard().text(SEARCH_BUTTON).resized().persistent();
+/** Подпись кнопки запуска Mini App на той же reply-клавиатуре. */
+const WEBAPP_BUTTON = '🪃 Приложение';
+/** Постоянная клавиатура: поиск + вход в Mini App. Web-app-кнопка открывает вебапп прямо из клиента
+ *  (команды при этом остаются на кнопке-меню — они не конкурируют). Самовосстанавливается через
+ *  трансформер в bot/index.ts, поэтому вход в приложение всегда под рукой. */
+export const searchReplyKeyboard = new Keyboard()
+  .text(SEARCH_BUTTON)
+  .webApp(WEBAPP_BUTTON, env.WEBAPP_URL)
+  .resized()
+  .persistent();
 
 /** Лимит длины сообщения Telegram. Запас под перевод строк/заголовок при сборке итогового текста. */
 const TG_MSG_LIMIT = 4096;
