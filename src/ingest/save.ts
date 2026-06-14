@@ -8,7 +8,6 @@ import { getCluster } from '../db/clusters.js';
 import { getReminderSettings, setReminder } from '../db/reminders.js';
 import { enqueueProcess, type AckRef } from '../queue/index.js';
 import { IMAGE_SHELF } from '../cluster/assign.js';
-import { fixKeyboard } from '../bot/handlers/callbacks.js';
 import type { Item, NewItem } from '../db/schema.js';
 
 /**
@@ -130,24 +129,19 @@ export async function flushAlbumMessages(
   if (captionMsg && captionMsg.from) {
     // Идемпотентность: при ретрае флаша член мог уже сохраниться до сбоя — не задваиваем.
     const existing = await findItemByTgMessageId(captionMsg.from.id, captionMsg.message_id);
-    let itemId: string;
     let text: string;
     if (existing) {
-      // Категория из L1 при ретрае недоступна (не персистится) — нейтральное подтверждение,
-      // но всё так же с кнопкой правки категории.
-      itemId = existing.id;
+      // Категория из L1 при ретрае недоступна (не персистится) — нейтральное подтверждение.
       text = `✅ Уже сохранил${existing.title ? ` — ${truncate(existing.title, 80)}` : ''}`;
     } else {
       const { item, category, duplicate } = await saveItem(api, captionMsg.from.id, captionMsg);
-      itemId = item.id;
       // Тот же контент другим message_id (мимо findItemByTgMessageId) → дубль: не задвоили, сообщаем.
       text = duplicate ? duplicateText(item, category) : `✅ Положил в ${label(item.title, category)}`;
     }
     // Правка ack — best-effort: её падение (протухшее/изменённое сообщение) не должно ронять флаш
-    // и гонять ретрай (он бы задвоил уже сохранённое).
-    await api
-      .editMessageText(ackChatId, ackMessageId, text, { reply_markup: fixKeyboard(itemId) })
-      .catch(() => {});
+    // и гонять ретрай (он бы задвоил уже сохранённое). Без кнопок: управление записью — в карточке
+    // события (cardKeyboard), не на сообщении-приёме.
+    await api.editMessageText(ackChatId, ackMessageId, text).catch(() => {});
     return;
   }
   // Опоздавший член уже-постнутого альбома: его собратья (с подписью) сохранены прошлым флашем, а этот

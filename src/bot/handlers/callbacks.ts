@@ -48,8 +48,11 @@ function cardKeyboard(item: Item): InlineKeyboard {
   const kb = new InlineKeyboard();
   if (item.url) kb.url('🔗 Открыть', item.url);
   if (item.tgMessageId) kb.text('↑ Источник', `src:${item.id}`);
+  if (item.url || item.tgMessageId) kb.row();
+  // Управление записью живёт здесь (а не на сообщении-приёме «Положил в…»): напомнить + поправить
+  // категорию + удалить. fix:/rem:/delc: уже зарегистрированы.
+  kb.text('🪃 Напомнить', `rem:${item.id}`).text('🔀 Не та категория', `fix:${item.id}`).row();
   kb.text('🗑 Удалить', `delc:${item.id}`).text('✕', 'close');
-  kb.row().text('🪃 Напомнить', `rem:${item.id}`);
   return kb;
 }
 
@@ -183,10 +186,13 @@ export function registerCallbacks(bot: Bot): void {
     await ctx.answerCallbackQuery();
   });
 
-  // Выход из режима выбора категории обратно к L1-клавиатуре (🔀/🗑) — чтобы не было дедлока.
+  // Выход из режима выбора категории обратно к кнопкам карточки — чтобы не было дедлока. Правка
+  // категории зовётся из карточки события, поэтому возвращаем cardKeyboard (а не fix-клавиатуру).
   bot.callbackQuery(/^unfix:(.+)$/, async (ctx) => {
     const itemId = ctx.match[1]!;
-    await ctx.editMessageReplyMarkup({ reply_markup: fixKeyboard(itemId) }).catch(() => {});
+    const item = await getItem(itemId);
+    const kb = item ? cardKeyboard(item) : new InlineKeyboard().text('✕', 'close');
+    await ctx.editMessageReplyMarkup({ reply_markup: kb }).catch(() => {});
     await ctx.answerCallbackQuery();
   });
 
@@ -220,8 +226,10 @@ export function registerCallbacks(bot: Bot): void {
     if (prevClusterId && prevClusterId !== clusterId) await recomputeClusterStats(prevClusterId);
 
     await delEditPending(msg.chat.id, msg.message_id);
-    await ctx.editMessageText(`✅ Перенёс в «${cluster.name}»`);
-    await ctx.answerCallbackQuery({ text: 'Готово' });
+    // Карточку не затираем (она может быть фото — editMessageText упал бы): возвращаем её кнопки и
+    // подтверждаем перенос тостом.
+    await ctx.editMessageReplyMarkup({ reply_markup: cardKeyboard(item) }).catch(() => {});
+    await ctx.answerCallbackQuery({ text: `Перенёс в «${cluster.name}»` });
   });
 
   // Opt-in проактивных всплытий (режим 2): ответ на первый образец / переключатель из /settings.

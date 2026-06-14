@@ -6,7 +6,6 @@ import { flushAlbum, notifyAlbumFlushFailed } from '../ingest/album.js';
 import { flushBurst, notifyBurstFlushFailed, reapEmptyImport } from '../import/burst.js';
 import { getItem, itemDisplayName } from '../db/items.js';
 import { label } from '../ingest/save.js';
-import { fixKeyboard } from '../bot/handlers/callbacks.js';
 import { getBotApi } from '../bot/api.js';
 import { notifyAdmins } from '../bot/alerts.js';
 import { QuotaExceededError, BudgetExhaustedError } from '../ai/errors.js';
@@ -102,10 +101,10 @@ export async function startWorkers(): Promise<void> {
           const finalName = res.clusterName ?? seedCategory;
           // Если на item стоит напоминание — дописываем строку возврата (иначе затёрли бы L1-постановку).
           const remind = await remindLine(item);
+          // Без кнопок: управление записью (напомнить/перенести/удалить) живёт в карточке события
+          // (cardKeyboard), а не на сообщении-приёме. Финал — просто честный статус.
           await getBotApi()
-            .editMessageText(ack.chatId, ack.messageId, `✅ Положил в ${label(item.title, finalName)}${warn}${remind}`, {
-              reply_markup: fixKeyboard(itemId),
-            })
+            .editMessageText(ack.chatId, ack.messageId, `✅ Положил в ${label(item.title, finalName)}${warn}${remind}`)
             .catch(() => {});
         }
       }
