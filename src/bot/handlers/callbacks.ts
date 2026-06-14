@@ -18,7 +18,7 @@ import {
 } from '../../db/clusters.js';
 import { setEditPending, getEditPending, delEditPending } from '../../db/sessions.js';
 import { setProactiveMode } from '../../db/users.js';
-import { flushBurst, doneKeyboard, startImport } from '../../import/burst.js';
+import { discardEmptyImport, startImport } from '../../import/burst.js';
 import type { Item } from '../../db/schema.js';
 
 /**
@@ -49,6 +49,7 @@ function cardKeyboard(item: Item): InlineKeyboard {
   if (item.url) kb.url('🔗 Открыть', item.url);
   if (item.tgMessageId) kb.text('↑ Источник', `src:${item.id}`);
   kb.text('🗑 Удалить', `delc:${item.id}`).text('✕', 'close');
+  kb.row().text('🪃 Напомнить', `rem:${item.id}`);
   return kb;
 }
 
@@ -131,9 +132,11 @@ async function showCard(ctx: Context, item: Item): Promise<void> {
   lastCard.set(chatId, sent.message_id);
 }
 
-/** Клавиатура под L1-сообщением: поправить категорию + удалить из архива. */
+/** Клавиатура под L1-сообщением: напомнить + поправить категорию + удалить из архива. */
 export function fixKeyboard(itemId: string): InlineKeyboard {
   return new InlineKeyboard()
+    .text('🪃 Напомнить', `rem:${itemId}`)
+    .row()
     .text('🔀 Не та категория', `fix:${itemId}`)
     .row()
     .text('🗑 Удалить', `del:${itemId}`);
@@ -357,28 +360,13 @@ export function registerCallbacks(bot: Bot): void {
     );
   });
 
-  // «Готово» под прогрессом заливки → немедленный флаш буфера. flushBurst сам правит прогресс на итог.
-  bot.callbackQuery('import:done', async (ctx) => {
-    await ctx.answerCallbackQuery({ text: 'Собираю заливку…' });
-    let res;
-    try {
-      res = await flushBurst(ctx.api, ctx.from.id);
-    } catch (err) {
-      // Бюджет-стоп flushBurst обрабатывает сам (правит прогресс-сообщение). Сюда долетают лишь прочие
-      // сбои (сеть/API): буфер и сессия сохранены — сообщаем без грязного отказа и оставляем кнопку повтора.
-      console.error('import flush error:', err);
-      await ctx
-        .editMessageText('Не получилось долить сейчас — буфер сохранён, нажми «Готово» ещё раз чуть позже.', {
-          reply_markup: doneKeyboard(),
-        })
-        .catch(() => {});
-      return;
-    }
-    if (!res) {
-      // Буфер пуст (ничего не переслал или уже флашнули по простою) — убираем кнопку.
-      await ctx
-        .editMessageText('Заливка пустая — ничего не переслал. Набери /import и перешли сохранённое.')
-        .catch(() => {});
+  // «Отмена» на стартовом сообщении заливки (живёт ТОЛЬКО до первого файла) → гасим пустую сессию.
+  // discardEmptyImport не тронет уже начатую заливку (count>0) — её завершит авто-флаш по тишине.
+  bot.callbackQuery('import:cancel', async (ctx) => {
+    const cancelled = await discardEmptyImport(ctx.from.id);
+    await ctx.answerCallbackQuery({ text: cancelled ? 'Заливка отменена' : 'Файлы уже пошли — заканчиваю' });
+    if (cancelled) {
+      await ctx.editMessageText('Заливка отменена. Набери /import, когда будешь готов.').catch(() => {});
     }
   });
 

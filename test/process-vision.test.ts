@@ -70,6 +70,9 @@ function makeItem(p: Partial<Item>): Item {
     clusterLocked: false,
     createdAt: new Date(),
     indexedAt: null,
+    remindAt: null,
+    remindStatus: null,
+    remindCreatedAt: null,
     ...p,
   };
 }

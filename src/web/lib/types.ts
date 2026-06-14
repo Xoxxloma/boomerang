@@ -55,8 +55,17 @@ export interface BridgeResponse {
 }
 
 export interface ClusterItemsResponse {
-  cluster: { id: string; name: string; size: number };
+  /** mature — тема набрала достаточно записей, чтобы свод имел смысл (гейт кнопки «Свести»). */
+  cluster: { id: string; name: string; size: number; mature: boolean };
   items: ItemDTO[];
+}
+
+/** Запись с активным напоминанием — для экрана «Скоро вернётся». */
+export interface ReminderDTO extends ItemDTO {
+  remindAt: string;
+}
+export interface UpcomingResponse {
+  reminders: ReminderDTO[];
 }
 
 export type EchoKind = 'maturity' | 'on_this_day' | 'resonance';

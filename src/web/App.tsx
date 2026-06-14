@@ -3,6 +3,7 @@ import type { ItemDTO } from './lib/types.js';
 import { TabBar, type Tab } from './components/TabBar.js';
 import { SearchScreen } from './screens/Search.js';
 import { EchoScreen } from './screens/Echo.js';
+import { SoonScreen } from './screens/Soon.js';
 import { ItemSheet } from './components/ItemSheet.js';
 import { ClusterSheet } from './components/ClusterSheet.js';
 import { BridgeSheet } from './components/BridgeSheet.js';
@@ -34,6 +35,7 @@ export function App() {
   return (
     <div className="app-shell">
       {tab === 'echo' && <EchoScreen onOpenItem={openItem} onSynth={openSynth} />}
+      {tab === 'soon' && <SoonScreen onOpenItem={openItem} />}
       {tab === 'search' && <SearchScreen onOpenItem={openItem} />}
       {tab === 'map' && (
         <Suspense

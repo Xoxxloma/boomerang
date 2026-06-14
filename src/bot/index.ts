@@ -9,6 +9,7 @@ import { registerSearch } from './handlers/search.js';
 import { registerCallbacks } from './handlers/callbacks.js';
 import { registerBrowse } from './handlers/browse.js';
 import { registerIngest } from './handlers/ingest.js';
+import { registerReminders } from './handlers/reminders.js';
 import { searchReplyKeyboard } from './handlers/search.js';
 
 export function createBot(): Bot {
@@ -60,6 +61,9 @@ export function createBot(): Bot {
   // Поиск регистрируем ДО приёма: вопрос-запрос должен перехватываться раньше,
   // чем обычный текст уйдёт в сохранение.
   registerSearch(bot);
+  // Напоминания — ПОСЛЕ поиска, ДО приёма: ловит только force_reply «Своё время» (через remind_pending),
+  // на остальном message:text делает next() → обычный текст уходит в ingest как раньше.
+  registerReminders(bot);
   registerIngest(bot);
 
   bot.catch((err) => {

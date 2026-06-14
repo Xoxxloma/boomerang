@@ -3,6 +3,7 @@ import { listClusters, getCluster } from '../../db/clusters.js';
 import { listClusterItems } from '../../retrieval/search.js';
 import { listClusterBridges, listBridgePairs, listItemsByIds } from '../../db/items.js';
 import { IMAGE_SHELF, LINKS_SHELF } from '../../cluster/assign.js';
+import { tuning } from '../../config/tuning.js';
 import { toItemDTO } from '../serialize.js';
 import type { AuthVars } from '../server.js';
 
@@ -128,8 +129,15 @@ mapRoutes.get('/clusters/:id/items', async (c) => {
   if (!cluster || cluster.userId !== userId) return c.json({ error: 'not-found' }, 404);
 
   const items = await listClusterItems(userId, id, 24);
+  // «Свести» осмыслено только когда записей достаточно (тезис: не список, а сведённая мысль).
+  // Тот же порог, что у созревших тем в Эхо — единый источник правды.
   return c.json({
-    cluster: { id: cluster.id, name: cluster.name, size: cluster.size },
+    cluster: {
+      id: cluster.id,
+      name: cluster.name,
+      size: cluster.size,
+      mature: cluster.size >= tuning.maturityThreshold,
+    },
     items: items.map(toItemDTO),
   });
 });

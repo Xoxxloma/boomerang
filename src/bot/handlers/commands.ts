@@ -45,7 +45,7 @@ export function registerCommands(bot: Bot): void {
   bot.command('import', async (ctx) => {
     const started = await startImport(ctx.api, ctx.from!.id, ctx.chat.id);
     if (!started) {
-      await ctx.reply('Заливка уже идёт — пересылай дальше или нажми «Готово».');
+      await ctx.reply('Заливка уже идёт — просто пересылай дальше.');
     }
   });
 

@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { computeEcho } from '../../retrieval/echo.js';
 import { listClusterItems } from '../../retrieval/search.js';
 import { getCluster } from '../../db/clusters.js';
+import { tuning } from '../../config/tuning.js';
 import { checkUserBudget, formatResetUtc } from '../../ai/usage.js';
 import { toItemDTO } from '../serialize.js';
 import { buildSynthResponse } from '../synthResponse.js';
@@ -37,6 +38,9 @@ echoRoutes.post('/synthesize', async (c) => {
 
   const cluster = await getCluster(clusterId);
   if (!cluster || cluster.userId !== userId) return c.json({ error: 'not-found' }, 404);
+  // Незрелую тему не сводим: список и так на виду, свод лишь жжёт бюджет. Клиент прячет кнопку,
+  // но защищаемся и тут — на случай устаревшего фронта.
+  if (cluster.size < tuning.maturityThreshold) return c.json({ error: 'immature' }, 422);
 
   const budget = checkUserBudget(userId);
   if (!budget.allowed) {

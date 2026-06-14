@@ -1,4 +1,4 @@
-import { getBoss, Q_PROCESS, Q_FLUSH_ALBUM, Q_BURST_FLUSH, Q_PROCESS_DLQ } from './boss.js';
+import { getBoss, Q_PROCESS, Q_FLUSH_ALBUM, Q_BURST_FLUSH, Q_PROCESS_DLQ, Q_REMIND_SWEEP } from './boss.js';
 
 /** Координаты сообщения-квитанции поста (в личке chatId === userId) — чтобы L2 мог его править. */
 export interface AckRef {
@@ -27,17 +27,24 @@ export interface FlushAlbumJob {
 
 export interface BurstFlushJob {
   userId: number;
+  /** true — это «жнец» забытой пустой сессии (reapEmptyImport), а не флаш буфера. */
+  reap?: boolean;
 }
 
 /**
- * Окно debounce авто-флаша заливки (сек): срабатывает через столько после последней пересылки.
- * Длинное (30 мин) — чтобы паузы на пере-выделение очередной пачки по 100 не рвали сессию на куски.
- * Основной способ завершить заливку — кнопка «Готово»; этот таймаут лишь страховка от забытой сессии.
+ * Кикофф авто-флаша заливки: первая пересылка ставит флаш через BURST_KICKOFF_SEC, дальше трейлинг-
+ * завершение «через N секунд тишины» ведут гейт оседания (tuning.burstSettleMs) + само-перезапуск
+ * enqueueBurstReflush в import/burst.ts. НЕ используем sendDebounced: его слот привязан к 30-мин окну,
+ * и второй /import в том же окне не получал бы задачу (singleton-слот занят). singletonKey без
+ * singletonSeconds допускает новую задачу, как только прошлая завершилась — по задаче на сессию.
  */
-const BURST_DEBOUNCE_SEC = 1800;
+const BURST_KICKOFF_SEC = 3;
 
-/** Короткий добор флаша: если на момент флаша альбомы ещё «сыпались», дольём через столько секунд. */
+/** Короткий добор флаша: пока на момент флаша ещё «сыпались» части, дольём через столько секунд. */
 const BURST_REFLUSH_SEC = 3;
+
+/** «Жнец» пустой сессии: гасим забытый /import без единой пересылки через столько секунд после старта. */
+const BURST_REAP_SEC = 300;
 
 /**
  * Поставить L2-обработку item в фон (эмбеддинг/OCR/чтение док/кластер).
@@ -68,22 +75,20 @@ export async function enqueueAlbumFlush(gid: string): Promise<void> {
 }
 
 /**
- * Запланировать батч-флаш всплеска пересылок с debounce: каждая новая пересылка продлевает окно,
- * флаш срабатывает через BURST_DEBOUNCE_SEC после последней. Один job на пользователя.
+ * Кикофф батч-флаша всплеска пересылок (leading-edge, см. коммент к BURST_DEBOUNCE_SEC): первая
+ * пересылка запускает флаш почти сразу, дальше завершение ведёт гейт оседания + reflush. Один job на юзера.
  */
 export async function enqueueBurstFlush(userId: number): Promise<void> {
-  await getBoss().sendDebounced(
-    Q_BURST_FLUSH,
-    { userId } satisfies BurstFlushJob,
-    { retryLimit: 2 },
-    BURST_DEBOUNCE_SEC,
-    String(userId),
-  );
+  await getBoss().send(Q_BURST_FLUSH, { userId } satisfies BurstFlushJob, {
+    startAfter: BURST_KICKOFF_SEC,
+    singletonKey: `flush:${userId}`,
+    retryLimit: 2,
+  });
 }
 
 /**
- * Короткий добор флаша заливки: ставится, когда флаш отложен из-за ещё «оседающих» альбомов (части
- * пришли только что). Отдельный singletonKey, чтобы не конфликтовать с дебаунс-флашем (ключ = userId).
+ * Короткий добор флаша заливки: ставится, когда флаш отложен из-за ещё «оседающих» частей (пришли
+ * только что). Отдельный singletonKey, чтобы не конфликтовать с дебаунс-флашем (ключ = userId).
  */
 export async function enqueueBurstReflush(userId: number): Promise<void> {
   await getBoss().send(Q_BURST_FLUSH, { userId } satisfies BurstFlushJob, {
@@ -91,4 +96,39 @@ export async function enqueueBurstReflush(userId: number): Promise<void> {
     singletonKey: `reflush:${userId}`,
     retryLimit: 2,
   });
+}
+
+/**
+ * «Жнец» забытой пустой сессии: ставится на старте /import. Через BURST_REAP_SEC reapEmptyImport
+ * закроет сессию, только если в неё так и не пришло ни одной пересылки (начатую заливку не трогает).
+ * БЕЗ singletonKey — каждый /import ставит свой таймер; лишние срабатывания идемпотентны (гасим лишь
+ * пустую и достаточно старую сессию). retryLimit:1 — пропуск не критичен.
+ */
+export async function enqueueBurstReap(userId: number): Promise<void> {
+  await getBoss().send(Q_BURST_FLUSH, { userId, reap: true } satisfies BurstFlushJob, {
+    startAfter: BURST_REAP_SEC,
+    retryLimit: 1,
+  });
+}
+
+/**
+ * Отложенный флаш заливки на конкретный момент: авто-возобновление после сброса дневного лимита
+ * расхода (бюджет-стоп оставил часть буфера). singletonKey гасит дубли постановки.
+ */
+export async function enqueueBurstFlushAt(userId: number, startAfterSec: number): Promise<void> {
+  await getBoss().send(Q_BURST_FLUSH, { userId } satisfies BurstFlushJob, {
+    startAfter: Math.max(1, Math.floor(startAfterSec)),
+    singletonKey: `resume:${userId}`,
+    retryLimit: 2,
+  });
+}
+
+/**
+ * «Вернуть сейчас» (кнопка в вебаппе): немедленно дёргаем sweep, не дожидаясь минутного cron.
+ * Само напоминание уже помечено созревшим (setReminder с now) выше по стеку — воркер заберёт его
+ * тем же claimDueReminders. singletonKey по itemId гасит дубль-тапы. retryLimit:0 — пропуск тика
+ * не критичен (минутный cron подберёт следом).
+ */
+export async function enqueueRemindNow(itemId: string): Promise<void> {
+  await getBoss().send(Q_REMIND_SWEEP, {}, { singletonKey: `now:${itemId}`, retryLimit: 0 });
 }

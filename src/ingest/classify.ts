@@ -1,5 +1,14 @@
+import { DateTime } from 'luxon';
 import { chatJson } from '../ai/llm.js';
-import { CLASSIFY_SYSTEM, classifyPrompt, CLASSIFY_TITLE_SYSTEM, classifyTitlePrompt } from '../ai/prompts.js';
+import {
+  CLASSIFY_SYSTEM,
+  classifyPrompt,
+  CLASSIFY_TITLE_SYSTEM,
+  classifyTitlePrompt,
+  CLASSIFY_REMIND_SYSTEM,
+  classifyRemindPrompt,
+} from '../ai/prompts.js';
+import { tuning } from '../config/tuning.js';
 import { LINKS_SHELF } from '../cluster/assign.js';
 import { buildClassifySignal, isContentlessLink, type Indexable } from './extract.js';
 
@@ -27,6 +36,50 @@ export async function classify(it: Indexable, userId: number): Promise<string> {
   } catch (err) {
     console.error('classify error:', err);
     return 'Разное';
+  }
+}
+
+/** Извлечённое из L1-детекта напоминание («верни в момент T»). */
+export interface DetectedReminder {
+  whenAt: Date;
+}
+
+/** ISO со смещением → UTC Date, только если момент в будущем (прошлое/мусор отбрасываем). */
+function isoToFutureDate(iso: string | null | undefined, now: Date): Date | null {
+  if (!iso) return null;
+  const dt = DateTime.fromISO(iso, { setZone: true });
+  if (!dt.isValid) return null;
+  const at = dt.toUTC().toJSDate();
+  return at.getTime() > now.getTime() ? at : null;
+}
+
+/**
+ * L1-классификация ПЛЮС детект «это инструкция-напоминание + когда» — одним LLM-вызовом (без доп.
+ * запросов и регекса). Зовётся только на живом одиночном сообщении (гейт detectReminder в saveItem),
+ * НЕ при импорте. Категория считается как в classify(); reminder — null, если юзер не просил напомнить.
+ */
+export async function classifyWithReminder(
+  it: Indexable,
+  userId: number,
+  opts: { tz: string; now?: Date },
+): Promise<{ category: string; reminder: DetectedReminder | null }> {
+  if (isContentlessLink(it)) return { category: LINKS_SHELF, reminder: null };
+  const signal = buildClassifySignal(it);
+  if (!signal.trim()) return { category: 'Разное', reminder: null };
+
+  const now = opts.now ?? new Date();
+  const nowIso = DateTime.fromJSDate(now).setZone(opts.tz).toISO() ?? now.toISOString();
+  try {
+    const res = await chatJson<{ category: string; reminder?: { whenIso?: string | null } | null }>(
+      classifyRemindPrompt(signal, nowIso, tuning.remindDefaultHour),
+      { system: CLASSIFY_REMIND_SYSTEM, temperature: 0, userId, maxTokens: 110 },
+    );
+    const whenAt = isoToFutureDate(res.reminder?.whenIso, now);
+    return { category: cleanCategory(res.category), reminder: whenAt ? { whenAt } : null };
+  } catch (err) {
+    // Фолбэк как у classify: тема «Разное», напоминания нет — пайплайн приёма не падает.
+    console.error('classifyWithReminder error:', err);
+    return { category: 'Разное', reminder: null };
   }
 }
 

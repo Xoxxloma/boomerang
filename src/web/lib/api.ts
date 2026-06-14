@@ -5,6 +5,7 @@ import type {
   BridgeResponse,
   ClusterItemsResponse,
   EchoResponse,
+  UpcomingResponse,
 } from './types.js';
 
 /** Ошибка API с кодом статуса — экраны различают 429 (бюджет) и прочие. */
@@ -48,4 +49,18 @@ export const api = {
     request<BridgeResponse>(`/map/bridge?a=${encodeURIComponent(a)}&b=${encodeURIComponent(b)}`),
   clusterItems: (id: string) => request<ClusterItemsResponse>(`/clusters/${id}/items`),
   echo: () => request<EchoResponse>('/echo'),
+
+  // --- Напоминания ---
+  upcoming: () => request<UpcomingResponse>('/upcoming'),
+  createReminder: (itemId: string, remindAt: string) =>
+    request<{ ok: true }>('/reminders', { method: 'POST', body: JSON.stringify({ itemId, remindAt }) }),
+  reschedule: (id: string, remindAt: string) =>
+    request<{ ok: true }>(`/reminders/${id}/reschedule`, {
+      method: 'POST',
+      body: JSON.stringify({ remindAt }),
+    }),
+  cancelReminder: (id: string) => request<{ ok: true }>(`/reminders/${id}/cancel`, { method: 'POST' }),
+  remindNow: (id: string) => request<{ ok: true }>(`/reminders/${id}/now`, { method: 'POST' }),
+  /** Сообщить серверу таймзону (Intl) — для бот-стороны (пресеты/тихие часы). Best-effort. */
+  setTz: (tz: string) => request<{ ok: true }>('/settings/tz', { method: 'POST', body: JSON.stringify({ tz }) }),
 };

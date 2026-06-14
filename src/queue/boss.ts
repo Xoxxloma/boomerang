@@ -7,6 +7,8 @@ export const Q_FLUSH_ALBUM = 'l2-flush-album';
 export const Q_BURST_FLUSH = 'l2-burst-flush';
 /** Dead-letter для l2-process: сюда pg-boss копирует задачу, исчерпавшую ретраи (реальный сбой). */
 export const Q_PROCESS_DLQ = 'l2-process-dlq';
+/** Cron-sweep напоминаний: раз в минуту забираем созревшие (remind_at <= now) и доставляем. */
+export const Q_REMIND_SWEEP = 'reminders-sweep';
 
 let boss: PgBoss | null = null;
 
@@ -32,6 +34,10 @@ export async function startBoss(): Promise<PgBoss> {
   await b.createQueue(Q_PROCESS);
   await b.createQueue(Q_FLUSH_ALBUM);
   await b.createQueue(Q_BURST_FLUSH);
+  await b.createQueue(Q_REMIND_SWEEP);
+  // Раз в минуту кладём пустую задачу в Q_REMIND_SWEEP — воркер забирает созревшие напоминания из БД.
+  // Идемпотентно по имени очереди: повторный schedule на старте просто обновляет расписание.
+  await b.schedule(Q_REMIND_SWEEP, '* * * * *');
   return b;
 }
 

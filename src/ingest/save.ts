@@ -1,10 +1,11 @@
 import type { Api } from 'grammy';
 import type { Message } from 'grammy/types';
 import { detect, hasMeaningfulCaption, mediaFileRef } from './detect.js';
-import { classify } from './classify.js';
+import { classify, classifyWithReminder } from './classify.js';
 import { fetchLinkMeta, hostnameOf } from '../content/og.js';
 import { insertItem, findItemByTgMessageId, findDuplicateItem, groupsAlreadyPosted } from '../db/items.js';
 import { getCluster } from '../db/clusters.js';
+import { getReminderSettings, setReminder } from '../db/reminders.js';
 import { enqueueProcess, type AckRef } from '../queue/index.js';
 import { IMAGE_SHELF } from '../cluster/assign.js';
 import { fixKeyboard } from '../bot/handlers/callbacks.js';
@@ -20,6 +21,7 @@ export async function saveItem(
   userId: number,
   msg: Message,
   ack?: AckRef,
+  opts?: { detectReminder?: boolean },
 ): Promise<{ item: Item; category: string; duplicate: boolean }> {
   const det = detect(msg);
 
@@ -86,7 +88,20 @@ export async function saveItem(
   const item = await insertItem(values);
 
   // Картинки — единая полка (§3.4), без LLM-классификации. Остальное — по дешёвому сигналу.
-  const category = det.type === 'image' ? IMAGE_SHELF : await classify(item, userId);
+  // detectReminder (живой одиночный приём): тем же LLM-вызовом ловим «напомни …» и молча ставим
+  // напоминание — без доп. вызова и без регекса. Картинки минуют classify → их покрывает кнопка.
+  let category: string;
+  if (det.type === 'image') {
+    category = IMAGE_SHELF;
+  } else if (opts?.detectReminder) {
+    const { tz } = await getReminderSettings(userId);
+    const res = await classifyWithReminder(item, userId, { tz });
+    category = res.category;
+    // Тихо: L1-ack не трогаем (ещё идёт обработка), возврат всплывёт на финале L2 (worker.ts).
+    if (res.reminder) await setReminder(item.id, userId, res.reminder.whenAt);
+  } else {
+    category = await classify(item, userId);
+  }
   // ack передаём только для одиночных пересылок — тогда L2 сможет отредактировать «Положил…» при сбое.
   // sttSkipReason едет в payload (не вычисляется в L2): там по отсутствию tgFileId большой файл
   // неотличим от gif — gif получил бы ложное предупреждение «сохранил без расшифровки».

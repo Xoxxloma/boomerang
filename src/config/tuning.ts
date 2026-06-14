@@ -13,6 +13,11 @@ function num(key: string, def: number): number {
   return Number.isFinite(n) ? n : def;
 }
 
+function str(key: string, def: string): string {
+  const raw = process.env[key];
+  return raw === undefined || raw.trim() === '' ? def : raw.trim();
+}
+
 export const tuning = {
   /** Косинус-близость к центроиду, ниже которой заводим новый кластер (cluster/assign). */
   clusterThreshold: num('CLUSTER_THRESHOLD', 0.45),
@@ -32,6 +37,28 @@ export const tuning = {
   resonanceSurfaceCooldownDays: num('RESONANCE_SURFACE_COOLDOWN_DAYS', 30),
   /** Режим 2: максимум проактивных РЕЗОНАНСОВ в сутки на юзера (созревание не ограничиваем). */
   proactiveDailyCap: num('PROACTIVE_DAILY_CAP', 2),
+
+  /**
+   * Окно «тишины» (мс) авто-завершения заливки: если столько не приходило новых частей — флашим
+   * буфер и закрываем сессию (import/burst → гейт оседания + enqueueBurstReflush). Покрывает и альбомы.
+   */
+  burstSettleMs: num('BURST_SETTLE_MS', 2500),
+
+  // --- Напоминания («верни в момент T»): дефолты времени, тихие часы, snooze, sweep. ---
+  /** Час (по tz юзера), на который ставим напоминание, если время не указано явно («напомни завтра»). */
+  remindDefaultHour: num('REMIND_DEFAULT_HOUR', 9),
+  /** Начало тихих часов (час по tz юзера): сработавшее в этом окне напоминание откладываем до конца. */
+  remindQuietStartHour: num('REMIND_QUIET_START_HOUR', 22),
+  /** Конец тихих часов (час по tz юзера): на это время переносим то, что созрело ночью. */
+  remindQuietEndHour: num('REMIND_QUIET_END_HOUR', 8),
+  /** Сколько минут добавляет кнопка «Отложить +1ч». */
+  remindSnoozeHourMin: num('REMIND_SNOOZE_HOUR_MIN', 60),
+  /** Сколько минут добавляет кнопка «Отложить +1д». */
+  remindSnoozeDayMin: num('REMIND_SNOOZE_DAY_MIN', 1440),
+  /** Сколько созревших напоминаний забираем за один тик cron-sweep (bound на пачку доставки). */
+  remindSweepBatch: num('REMIND_SWEEP_BATCH', 50),
+  /** IANA-таймзона по умолчанию, пока юзер не открыл Mini App (оттуда прилетает Intl.timeZone). */
+  remindDefaultTz: str('REMIND_DEFAULT_TZ', 'Europe/Moscow'),
 
   // --- Карта «Созвездие»: рёбра по реальным мостам между записями, не по центроидам кластеров. ---
   /** Сколько ближайших соседей из ДРУГИХ кластеров берём на каждую запись при подсчёте мостов. */

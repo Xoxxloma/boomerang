@@ -15,6 +15,9 @@ interface TgWebApp {
   themeParams: TgThemeParams;
   ready: () => void;
   expand: () => void;
+  /** Отключить родной вертикальный свайп-сворачивание Telegram (Bot API 7.7+) — иначе свайп по
+   *  нашим листам сворачивает весь Mini App. Опционально: на старых клиентах метода нет. */
+  disableVerticalSwipes?: () => void;
   setHeaderColor: (color: string) => void;
   setBackgroundColor: (color: string) => void;
   onEvent: (event: string, cb: () => void) => void;
@@ -63,6 +66,9 @@ export function initApp(): void {
   if (tg) {
     tg.ready();
     tg.expand();
+    // Свайп вниз должен закрывать лист, а не сворачивать апп — забираем жест себе. Полноэкранное
+    // приложение и так закрывается через «×». Feature-detect: на клиентах < Bot API 7.7 — no-op.
+    tg.disableVerticalSwipes?.();
     tg.onEvent('themeChanged', applyTheme);
   }
   applyTheme();

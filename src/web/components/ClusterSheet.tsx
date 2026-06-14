@@ -5,6 +5,7 @@ import { ItemRow } from './ItemRow.js';
 import { BeamLoader } from './States.js';
 import { IconBoomerang, IconClose } from './Icons.js';
 import { hapticImpact } from '../lib/telegram.js';
+import { Sheet } from './Sheet.js';
 
 /** Лист со спутниками узла-кластера: список записей темы + кнопка «Свести» (синтез по теме). */
 export function ClusterSheet({
@@ -35,11 +36,8 @@ export function ClusterSheet({
   }, [clusterId]);
 
   return (
-    <>
-      <div className="sheet-backdrop" onClick={onClose} />
-      <div className="sheet" role="dialog" aria-modal="true" aria-label={clusterName}>
-        <div className="sheet-grip" />
-        <div className="echo-kind">созвездие</div>
+    <Sheet label={clusterName} onClose={onClose}>
+      <div className="echo-kind">созвездие</div>
         <h2 className="title" style={{ fontSize: '1.2rem' }}>
           «{clusterName}»
         </h2>
@@ -56,20 +54,22 @@ export function ClusterSheet({
         </div>
 
         <div className="sheet-actions">
-          <button
-            className="return-btn"
-            onClick={() => {
-              hapticImpact('medium');
-              onSynth(clusterId, clusterName);
-            }}
-          >
-            <IconBoomerang /> Свести тему
-          </button>
+          {/* «Свести» только для созревших тем — иначе сводить нечего, список и есть ответ. */}
+          {data?.cluster.mature && (
+            <button
+              className="return-btn"
+              onClick={() => {
+                hapticImpact('medium');
+                onSynth(clusterId, clusterName);
+              }}
+            >
+              <IconBoomerang /> Свести тему
+            </button>
+          )}
           <button className="btn-secondary" onClick={onClose}>
             <IconClose /> Закрыть
           </button>
         </div>
-      </div>
-    </>
+    </Sheet>
   );
 }

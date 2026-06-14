@@ -57,6 +57,16 @@ export function IconClose(p: SVGProps<SVGSVGElement>) {
   );
 }
 
+/** Часы — таб «Скоро вернётся». */
+export function IconClock(p: SVGProps<SVGSVGElement>) {
+  return (
+    <svg {...base} {...p}>
+      <circle cx="12" cy="12" r="8" />
+      <path d="M12 7.5V12l3 2" />
+    </svg>
+  );
+}
+
 export function IconTrash(p: SVGProps<SVGSVGElement>) {
   return (
     <svg {...base} {...p}>

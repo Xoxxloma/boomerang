@@ -36,6 +36,13 @@ export const itemType = pgEnum('item_type', [
   'voice',
 ]);
 
+/**
+ * Статус пользовательского напоминания на item («верни мне это в момент T»).
+ * pending — ждёт срабатывания; sent — отдано пользователю (claim под row-lock);
+ * done — пользователь нажал «Готово»; cancelled — снято. NULL у item без напоминания.
+ */
+export const remindStatus = pgEnum('remind_status', ['pending', 'sent', 'done', 'cancelled']);
+
 export const users = pgTable('users', {
   id: bigint('id', { mode: 'number' }).primaryKey(), // tg user id
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
@@ -92,12 +99,21 @@ export const items = pgTable(
     clusterLocked: boolean('cluster_locked').default(false).notNull(), // правил вручную
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
     indexedAt: timestamp('indexed_at', { withTimezone: true }), // когда прошёл L2
+    // Пользовательское напоминание («верни в момент T»): источник истины для cron-sweep раз в минуту.
+    // remind_at — когда вернуть (UTC); remind_status — жизненный цикл (NULL = напоминания нет).
+    remindAt: timestamp('remind_at', { withTimezone: true }),
+    remindStatus: remindStatus('remind_status'),
+    remindCreatedAt: timestamp('remind_created_at', { withTimezone: true }),
   },
   (t) => [
     index('items_user_idx').on(t.userId),
     index('items_cluster_idx').on(t.clusterId),
     index('items_user_media_group_idx').on(t.userId, t.mediaGroupId),
     index('items_embedding_idx').using('hnsw', t.embedding.op('vector_cosine_ops')),
+    // Частичный индекс под sweep «отдай созревшие напоминания»: покрывает только строки с remind_at.
+    index('items_remind_due_idx')
+      .on(t.remindStatus, t.remindAt)
+      .where(sql`${t.remindAt} is not null`),
   ],
 );
 
@@ -136,6 +152,22 @@ export const surfacingLog = pgTable(
  */
 export const editPending = pgTable(
   'edit_pending',
+  {
+    chatId: bigint('chat_id', { mode: 'number' }).notNull(),
+    messageId: bigint('message_id', { mode: 'number' }).notNull(),
+    itemId: uuid('item_id').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.chatId, t.messageId] })],
+);
+
+/**
+ * Сессия ввода «Своё время» для напоминания: к какому item относится force_reply-ответ.
+ * По образцу edit_pending — состояние в БД (durable, работает при нескольких инстансах бота).
+ * Ключ — координаты сообщения-приглашения бота, на которое пользователь отвечает.
+ */
+export const remindPending = pgTable(
+  'remind_pending',
   {
     chatId: bigint('chat_id', { mode: 'number' }).notNull(),
     messageId: bigint('message_id', { mode: 'number' }).notNull(),

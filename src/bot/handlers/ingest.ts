@@ -38,7 +38,10 @@ export function registerIngest(bot: Bot): void {
     try {
       // Координаты ack-сообщения → L2 сможет отредактировать его при сбое индексации (1.4).
       const ackRef = { chatId: ack.chat.id, messageId: ack.message_id };
-      const { item, category, duplicate } = await saveItem(ctx.api, ctx.from.id, ctx.message, ackRef);
+      // detectReminder только здесь — живой одиночный приём. Альбом/burst/импорт зовут saveItem без флага.
+      const { item, category, duplicate } = await saveItem(ctx.api, ctx.from.id, ctx.message, ackRef, {
+        detectReminder: true,
+      });
       if (duplicate) {
         // Тот же пост уже сохранён → не задвоили; даём перейти к оригиналу (§ тезис: дубли не копим).
         await ctx.api.editMessageText(ack.chat.id, ack.message_id, duplicateText(item, category), {

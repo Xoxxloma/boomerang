@@ -46,3 +46,68 @@ export function longDate(iso: string): string {
   const d = new Date(iso);
   return `${d.getDate()} ${MONTHS[d.getMonth()]} ${d.getFullYear()}`;
 }
+
+// --- Напоминания: всё в локальной (= пользовательской) tz браузера. ---
+
+/** «9:00» из ISO (часы:минуты, локальная tz). */
+export function timeHM(iso: string): string {
+  const d = new Date(iso);
+  return `${d.getHours()}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
+/** В какую группу таймлайна «Скоро» попадает момент: сегодня / завтра / позже. */
+export function dayBucket(iso: string): 'today' | 'tomorrow' | 'later' {
+  const d = new Date(iso);
+  const now = new Date();
+  const start = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+  const diff = Math.round((start(d) - start(now)) / MS_DAY);
+  if (diff <= 0) return 'today';
+  if (diff === 1) return 'tomorrow';
+  return 'later';
+}
+
+/** «24 июня» — для дальних строк таймлайна. */
+export function shortDate(iso: string): string {
+  const d = new Date(iso);
+  return `${d.getDate()} ${MONTHS[d.getMonth()]}`;
+}
+
+/** Человекочитаемое «когда вернётся»: «сегодня в 9:00» / «завтра в 15:00» / «24 июня в 9:00». */
+export function remindWhen(iso: string): string {
+  const bucket = dayBucket(iso);
+  const time = timeHM(iso);
+  if (bucket === 'today') return `сегодня в ${time}`;
+  if (bucket === 'tomorrow') return `завтра в ${time}`;
+  return `${shortDate(iso)} в ${time}`;
+}
+
+// --- Пресеты времени (локальная tz браузера) → абсолютный ISO для отправки на сервер. ---
+const DEFAULT_HOUR = 9;
+const EVENING_HOUR = 19;
+
+export function presetTomorrow(): string {
+  const d = new Date();
+  d.setDate(d.getDate() + 1);
+  d.setHours(DEFAULT_HOUR, 0, 0, 0);
+  return d.toISOString();
+}
+export function presetEvening(): string {
+  const d = new Date();
+  d.setHours(EVENING_HOUR, 0, 0, 0);
+  if (d.getTime() <= Date.now()) d.setDate(d.getDate() + 1);
+  return d.toISOString();
+}
+export function presetWeek(): string {
+  const d = new Date();
+  d.setDate(d.getDate() + 7);
+  d.setHours(DEFAULT_HOUR, 0, 0, 0);
+  return d.toISOString();
+}
+
+/** value из <input type="datetime-local"> (локальное настенное время) → абсолютный ISO, если в будущем. */
+export function localInputToIso(value: string): string | null {
+  if (!value) return null;
+  const at = new Date(value); // трактуется как локальное время
+  if (Number.isNaN(at.getTime()) || at.getTime() <= Date.now()) return null;
+  return at.toISOString();
+}

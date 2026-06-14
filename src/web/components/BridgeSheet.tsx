@@ -4,6 +4,7 @@ import type { BridgeResponse, ItemDTO } from '../lib/types.js';
 import { ItemRow } from './ItemRow.js';
 import { BeamLoader } from './States.js';
 import { IconClose } from './Icons.js';
+import { Sheet } from './Sheet.js';
 
 /**
  * Лист-«нити» под ребром созвездия: какие именно записи связывают две темы. Делает связь действием, а не
@@ -35,11 +36,8 @@ export function BridgeSheet({
   }, [clusterA, clusterB]);
 
   return (
-    <>
-      <div className="sheet-backdrop" onClick={onClose} />
-      <div className="sheet" role="dialog" aria-modal="true" aria-label="Нити между темами">
-        <div className="sheet-grip" />
-        <div className="echo-kind">нити</div>
+    <Sheet label="Нити между темами" onClose={onClose}>
+      <div className="echo-kind">нити</div>
         {data && (
           <h2 className="title" style={{ fontSize: '1.2rem' }}>
             «{data.clusterA.name}» <span style={{ color: 'var(--beam)' }}>↔</span> «{data.clusterB.name}»
@@ -77,7 +75,6 @@ export function BridgeSheet({
             <IconClose /> Закрыть
           </button>
         </div>
-      </div>
-    </>
+    </Sheet>
   );
 }

@@ -1,12 +1,13 @@
 import type { ComponentType, SVGProps } from 'react';
-import { IconSearch, IconMap, IconBoomerang } from './Icons.js';
+import { IconSearch, IconMap, IconBoomerang, IconClock } from './Icons.js';
 import { hapticTap } from '../lib/telegram.js';
 
-export type Tab = 'search' | 'map' | 'echo';
+export type Tab = 'search' | 'map' | 'echo' | 'soon';
 
 const TABS: { id: Tab; label: string; Icon: ComponentType<SVGProps<SVGSVGElement>> }[] = [
   { id: 'echo', label: 'Эхо', Icon: IconBoomerang },
   { id: 'search', label: 'Поиск', Icon: IconSearch },
+  { id: 'soon', label: 'Скоро', Icon: IconClock },
   { id: 'map', label: 'Карта', Icon: IconMap },
 ];
 

@@ -30,10 +30,11 @@
     "@grammyjs/transformer-throttler": "^1.2.1",
     "@hono/node-server": "^1.13.7",
     "dotenv": "^16.4.7",
-    "hono": "^4.6.14",
     "drizzle-orm": "^0.38.3",
     "exceljs": "^4.4.0",
     "grammy": "^1.32.0",
+    "hono": "^4.6.14",
+    "luxon": "^3.7.2",
     "mammoth": "^1.12.0",
     "open-graph-scraper": "^6.11.0",
     "openai": "^4.77.0",
@@ -45,6 +46,7 @@
     "zod": "^3.24.1"
   },
   "devDependencies": {
+    "@types/luxon": "^3.7.1",
     "@types/node": "^22.10.5",
     "@types/react": "^18.3.18",
     "@types/react-dom": "^18.3.5",

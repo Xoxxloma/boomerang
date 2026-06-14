@@ -121,7 +121,7 @@ a {
   bottom: 0;
   z-index: var(--z-tabbar);
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(4, 1fr);
   gap: var(--s1);
   padding: var(--s2) var(--s3) calc(var(--s2) + env(safe-area-inset-bottom));
   background: color-mix(in oklab, var(--bg) 86%, transparent);
@@ -461,6 +461,16 @@ a {
      что под ним, когда листы стопкой (карточка поверх нитей). */
   box-shadow: 0 -1px 0 var(--hairline), 0 -16px 50px rgb(0 0 0 / 0.45);
   animation: sheet-up var(--dur-3) var(--ease-out);
+  /* Снап-бэк после неполного смахивания: возвращаем translateY к 0 плавно. */
+  transition: transform var(--dur-2) var(--ease-out);
+  /* Скролл листа не «прокидываем» на страницу под ним при оттяжке у краёв. */
+  overscroll-behavior: contain;
+}
+
+/* Во время перетаскивания лист «прилипает» к пальцу: гасим вступительную анимацию и снап-переход. */
+.sheet.dragging {
+  animation: none;
+  transition: none;
 }
 
 .sheet-grip {
@@ -469,6 +479,9 @@ a {
   border-radius: 2px;
   background: var(--hairline);
   margin: 0 auto var(--s4);
+  cursor: grab;
+  /* грип — гарантированная зона захвата для смахивания; не даём вебвью трактовать как скролл */
+  touch-action: none;
 }
 
 .sheet-actions {
@@ -492,6 +505,24 @@ a {
 .btn-danger {
   color: oklch(0.62 0.17 25);
   border-color: oklch(0.62 0.17 25 / 0.4);
+}
+
+.btn-secondary:disabled,
+.chip:disabled {
+  opacity: 0.5;
+}
+
+/* Нативный выбор даты/времени для напоминаний — под наш surface, читаем в обеих темах. */
+.soon-picker {
+  width: 100%;
+  padding: var(--s2) var(--s3);
+  border-radius: var(--r-card);
+  border: 1px solid var(--hairline);
+  background: var(--surface-2);
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  color-scheme: light dark;
 }
 
 /* ---------- Нити-мосты (тап по ребру созвездия) ---------- */

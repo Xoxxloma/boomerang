@@ -4,6 +4,7 @@ import type { ItemDTO, SearchResponse } from '../lib/types.js';
 import { SynthBody } from './Answer.js';
 import { BeamLoader } from './States.js';
 import { IconClose } from './Icons.js';
+import { Sheet } from './Sheet.js';
 
 /** Лист «Свести тему»: синтез по записям кластера (кнопка из Эха/Карты). Один лист за раз — */
 /** открытие источника закрывает этот лист и открывает карточку записи (управляет родитель). */
@@ -44,11 +45,8 @@ export function SynthSheet({
   }, [clusterId]);
 
   return (
-    <>
-      <div className="sheet-backdrop" onClick={onClose} />
-      <div className="sheet" role="dialog" aria-modal="true" aria-label={`Свод темы ${clusterName}`}>
-        <div className="sheet-grip" />
-        <div className="echo-kind" style={{ color: 'var(--beam)' }}>
+    <Sheet label={`Свод темы ${clusterName}`} onClose={onClose}>
+      <div className="echo-kind" style={{ color: 'var(--beam)' }}>
           Свод темы
         </div>
         <h2 className="title" style={{ fontSize: '1.2rem' }}>
@@ -70,7 +68,6 @@ export function SynthSheet({
             <IconClose /> Закрыть
           </button>
         </div>
-      </div>
-    </>
+    </Sheet>
   );
 }
