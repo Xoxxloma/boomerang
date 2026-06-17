@@ -61,6 +61,6 @@ export const api = {
     }),
   cancelReminder: (id: string) => request<{ ok: true }>(`/reminders/${id}/cancel`, { method: 'POST' }),
   remindNow: (id: string) => request<{ ok: true }>(`/reminders/${id}/now`, { method: 'POST' }),
-  /** Сообщить серверу таймзону (Intl) — для бот-стороны (пресеты/тихие часы). Best-effort. */
+  /** Сообщить серверу таймзону (Intl) — для бот-стороны (пресеты напоминаний). Best-effort. */
   setTz: (tz: string) => request<{ ok: true }>('/settings/tz', { method: 'POST', body: JSON.stringify({ tz }) }),
 };

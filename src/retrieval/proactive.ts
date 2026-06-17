@@ -3,7 +3,7 @@ import { LINKS_SHELF, type AssignResult } from '../cluster/assign.js';
 import type { Item } from '../db/schema.js';
 import { getBotApi } from '../bot/api.js';
 import { getProactiveMode, type ProactiveMode } from '../db/users.js';
-import { getCluster, setClusterMatured } from '../db/clusters.js';
+import { getCluster, bumpClusterMaturity } from '../db/clusters.js';
 import { findOlderSiblingInCluster, listClusterContentFields } from '../db/items.js';
 import { hasRealContent } from '../ingest/extract.js';
 import { logSurfacing, wasItemSurfacedRecently, countSurfacedToday } from '../db/surfacing.js';
@@ -17,25 +17,32 @@ import { tuning } from '../config/tuning.js';
 const RESONANCE_MIN_AGE_DAYS = tuning.resonanceMinAgeDays;
 /** Не показывать один и тот же старый item проактивно чаще, чем раз в столько дней. */
 const RESONANCE_SURFACE_COOLDOWN_DAYS = tuning.resonanceSurfaceCooldownDays;
-/** На каком размере кластера шлём «тема созрела» (один раз). */
+/** Шаг порога «тема созрела»: шлём на каждом кратном (5, 10, 15…) числе содержательных записей. */
 export const MATURITY_THRESHOLD = tuning.maturityThreshold;
 
 export type Trigger = 'maturity' | 'resonance';
+
+/** Кратный порогу рубеж, достигнутый данным числом содержательных записей (вниз): 7→5, 12→10, 4→0. */
+export function maturityMilestoneFor(contentfulSize: number): number {
+  return Math.floor(contentfulSize / MATURITY_THRESHOLD) * MATURITY_THRESHOLD;
+}
 
 /**
  * Чистая логика выбора триггера (без БД/сети — тестируется отдельно).
  * Максимум один на входящий item; maturity приоритетнее resonance.
  * - новый кластер → ничего (всплытие только когда новое легло к старому);
- * - СОДЕРЖАТЕЛЬНЫХ записей достигло порога и ещё не слали maturity → maturity;
+ * - СОДЕРЖАТЕЛЬНЫХ записей пересекло новый кратный порогу рубеж (выше уже отправленного) → maturity;
  * - иначе (дополнили существующий) → resonance-кандидат.
  * contentfulSize — число записей кластера с реальным содержимым (hasRealContent): пустышки
  * (только имя файла/URL) не должны «дозревать» тему — сводить по ним нечего (инцидент с «Недвижимостью»).
- * Сравнение `>=`, не `===`: отфильтрованный счёт растёт скачками, точное равенство пропустило бы порог
- * навсегда; «один раз» гарантирует maturedAt-гард.
+ * lastMilestone — последний кратный, на котором уже слали maturity (clusters.maturity_milestone, 0 — ни разу).
+ * Повтор на каждом новом кратном: floor-рубеж текущего счёта строго больше отправленного → созрело снова.
+ * Скачок (5→15 за раз) объявляем один раз на достигнутом рубеже (15), промежуточный 10 не дублируем.
  */
-export function pickTrigger(result: AssignResult, maturedAt: Date | null, contentfulSize: number): Trigger | null {
+export function pickTrigger(result: AssignResult, lastMilestone: number, contentfulSize: number): Trigger | null {
   if (result.isNew) return null;
-  if (contentfulSize >= MATURITY_THRESHOLD && maturedAt === null) return 'maturity';
+  const milestone = maturityMilestoneFor(contentfulSize);
+  if (milestone >= MATURITY_THRESHOLD && milestone > lastMilestone) return 'maturity';
   return 'resonance';
 }
 
@@ -61,25 +68,26 @@ export async function maybeSurface(item: Item, result: AssignResult): Promise<vo
     if (cluster.name === LINKS_SHELF) return;
 
     // Пустышки (только имя/URL) тему не «зреют» — сводить по ним нечего. Считаем содержательные
-    // ТОЛЬКО в окне кандидата на maturity (size дорос, ещё не слали) — вне окна селект не делаем.
+    // ТОЛЬКО когда общий size дорос до СЛЕДУЮЩЕГО кратного порогу рубежа (дешёвая верхняя оценка) —
+    // вне окна селект не делаем.
     let contentful = 0;
-    if (!result.isNew && cluster.maturedAt === null && result.size >= MATURITY_THRESHOLD) {
+    if (!result.isNew && result.size >= cluster.maturityMilestone + MATURITY_THRESHOLD) {
       const fields = await listClusterContentFields(item.userId, cluster.id);
       contentful = fields.filter(hasRealContent).length;
     }
 
-    const trigger = pickTrigger(result, cluster.maturedAt, contentful);
+    const trigger = pickTrigger(result, cluster.maturityMilestone, contentful);
     if (!trigger) return;
 
     if (trigger === 'maturity') {
-      // Созревание — раз на тему, дневным лимитом НЕ режем. Кнопка «📋 Свести» вместо текста /find.
+      // Созревание — на каждом новом кратном порогу, дневным лимитом НЕ режем. Кнопка «📋 Свести» вместо /find.
       // В тексте — число СОДЕРЖАТЕЛЬНЫХ (не обещаем 5 материалов, когда читаемых 3).
       const text = `У тебя накопилось ${contentful} материалов в теме «${cluster.name}». Свести в один ответ?`;
       // Сначала ОТПРАВКА, потом маркировка/лог: если send упал (403 — юзер заблокировал бота, сеть),
-      // maturedAt НЕ выставится → одноразовое «тема созрела» не потеряется, дойдёт со следующим item.
-      // Риск нового порядка (send прошёл, setClusterMatured упал → повтор) безобиднее молчаливой потери.
+      // рубеж НЕ поднимется → «тема созрела» не потеряется, дойдёт со следующим item.
+      // Риск нового порядка (send прошёл, bump упал → повтор) безобиднее молчаливой потери.
       await send(item.userId, text, null, mode, cluster.id);
-      await setClusterMatured(cluster.id);
+      await bumpClusterMaturity(cluster.id, maturityMilestoneFor(contentful));
       await logSurfacing({
         userId: item.userId,
         kind: 'maturity',

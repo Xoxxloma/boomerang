@@ -44,13 +44,9 @@ export const tuning = {
    */
   burstSettleMs: num('BURST_SETTLE_MS', 2500),
 
-  // --- Напоминания («верни в момент T»): дефолты времени, тихие часы, snooze, sweep. ---
+  // --- Напоминания («верни в момент T»): дефолт времени, snooze, sweep. ---
   /** Час (по tz юзера), на который ставим напоминание, если время не указано явно («напомни завтра»). */
   remindDefaultHour: num('REMIND_DEFAULT_HOUR', 9),
-  /** Начало тихих часов (час по tz юзера): сработавшее в этом окне напоминание откладываем до конца. */
-  remindQuietStartHour: num('REMIND_QUIET_START_HOUR', 22),
-  /** Конец тихих часов (час по tz юзера): на это время переносим то, что созрело ночью. */
-  remindQuietEndHour: num('REMIND_QUIET_END_HOUR', 8),
   /** Сколько минут добавляет кнопка «Отложить +1ч». */
   remindSnoozeHourMin: num('REMIND_SNOOZE_HOUR_MIN', 60),
   /** Сколько минут добавляет кнопка «Отложить +1д». */

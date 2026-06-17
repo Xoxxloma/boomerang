@@ -92,9 +92,16 @@ export async function renameCluster(id: string, name: string): Promise<void> {
   await db.update(clusters).set({ name, updatedAt: sql`now()` }).where(eq(clusters.id, id));
 }
 
-/** Отметить, что по кластеру отправлено maturity-напоминание (проактивное всплытие, режим 2). */
-export async function setClusterMatured(id: string): Promise<void> {
-  await db.update(clusters).set({ maturedAt: sql`now()` }).where(eq(clusters.id, id));
+/**
+ * Отметить отправку maturity по кластеру (проактивное всплытие, режим 2): поднять рубеж до достигнутого
+ * кратного порогу числа содержательных записей. Следующее «тема созрела» — только когда дорастём до
+ * нового кратного. maturedAt пишем как «время последней отправки» (информативно).
+ */
+export async function bumpClusterMaturity(id: string, milestone: number): Promise<void> {
+  await db
+    .update(clusters)
+    .set({ maturityMilestone: milestone, maturedAt: sql`now()` })
+    .where(eq(clusters.id, id));
 }
 
 /** Батч-назначение пачки item одному кластеру (заливка) — один UPDATE вместо N. */

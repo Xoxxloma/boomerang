@@ -59,8 +59,11 @@ export const clusters = pgTable(
     name: text('name').notNull(), // человеческое имя от LLM
     centroid: vector('centroid', { dimensions: EMBEDDING_DIM }),
     size: integer('size').default(0).notNull(),
-    // Когда по кластеру слали maturity-напоминание (проактивное всплытие, режим 2). NULL — ещё не слали.
+    // Когда по кластеру В ПОСЛЕДНИЙ РАЗ слали maturity (проактивное всплытие, режим 2). NULL — ни разу.
     maturedAt: timestamp('matured_at', { withTimezone: true }),
+    // Последний кратный порогу рубеж СОДЕРЖАТЕЛЬНЫХ записей, на котором слали maturity (0 — ещё не слали).
+    // Повторяем «тема созрела» на каждом новом кратном (5, 10, 15…), а не один раз — гард по этому числу.
+    maturityMilestone: integer('maturity_milestone').default(0).notNull(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
   },
   (t) => [

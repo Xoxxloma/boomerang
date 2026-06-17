@@ -78,6 +78,13 @@
       "when": 1781451634693,
       "tag": "0010_flimsy_freak",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1781636786708,
+      "tag": "0011_common_lethal_legion",
+      "breakpoints": true
     }
   ]
 }

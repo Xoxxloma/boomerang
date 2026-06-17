@@ -10,28 +10,42 @@ const res = (over: Partial<AssignResult>): AssignResult => ({
   ...over,
 });
 
+const T = MATURITY_THRESHOLD;
+
 describe('pickTrigger', () => {
   it('новый кластер — ничего не всплывает', () => {
-    expect(pickTrigger(res({ isNew: true, size: 1 }), null, 1)).toBeNull();
+    expect(pickTrigger(res({ isNew: true, size: 1 }), 0, 1)).toBeNull();
   });
 
-  it('содержательных достигло порога и maturity ещё не слали → maturity', () => {
-    expect(pickTrigger(res({ size: MATURITY_THRESHOLD }), null, MATURITY_THRESHOLD)).toBe('maturity');
+  it('содержательных достигло порога, рубеж 0 → maturity', () => {
+    expect(pickTrigger(res({ size: T }), 0, T)).toBe('maturity');
   });
 
   it('размер кластера ≥ порога, но содержательных меньше (пустышки) → резонанс, не maturity', () => {
-    expect(pickTrigger(res({ size: MATURITY_THRESHOLD }), null, MATURITY_THRESHOLD - 2)).toBe('resonance');
+    expect(pickTrigger(res({ size: T }), 0, T - 2)).toBe('resonance');
   });
 
-  it('содержательных уже выше порога (перепрыг) и maturity не слали → maturity (>=, не ===)', () => {
-    expect(pickTrigger(res({ size: MATURITY_THRESHOLD + 1 }), null, MATURITY_THRESHOLD + 1)).toBe('maturity');
+  it('содержательных уже выше порога (перепрыг через рубеж) → maturity на достигнутом кратном', () => {
+    expect(pickTrigger(res({ size: T + 1 }), 0, T + 1)).toBe('maturity');
   });
 
-  it('порог достигнут, но maturity уже слали (maturedAt) → резонанс (не дублируем)', () => {
-    expect(pickTrigger(res({ size: MATURITY_THRESHOLD }), new Date(), MATURITY_THRESHOLD)).toBe('resonance');
+  it('порог достигнут, но рубеж уже на этом кратном → резонанс (не дублируем тот же рубеж)', () => {
+    expect(pickTrigger(res({ size: T }), T, T)).toBe('resonance');
+  });
+
+  it('дорос до СЛЕДУЮЩЕГО кратного (10) сверх отправленного (5) → maturity снова', () => {
+    expect(pickTrigger(res({ size: 2 * T }), T, 2 * T)).toBe('maturity');
+  });
+
+  it('между кратными (7 при отправленном рубеже 5) → резонанс (новый рубеж не пройден)', () => {
+    expect(pickTrigger(res({ size: T + 2 }), T, T + 2)).toBe('resonance');
+  });
+
+  it('скачок 5→15 при отправленном рубеже 5 → maturity (объявим 15, не дублируем 10)', () => {
+    expect(pickTrigger(res({ size: 3 * T }), T, 3 * T)).toBe('maturity');
   });
 
   it('дополнили существующий кластер ниже порога → резонанс', () => {
-    expect(pickTrigger(res({ size: 2 }), null, 2)).toBe('resonance');
+    expect(pickTrigger(res({ size: 2 }), 0, 2)).toBe('resonance');
   });
 });

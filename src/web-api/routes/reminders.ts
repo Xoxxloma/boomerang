@@ -62,7 +62,7 @@ remindersRoutes.post('/reminders/:id/now', async (c) => {
   return c.json({ ok: true });
 });
 
-/** Таймзона юзера из Mini App (Intl.timeZone) — нужна бот-стороне для пресетов/тихих часов. */
+/** Таймзона юзера из Mini App (Intl.timeZone) — нужна бот-стороне для пресетов напоминаний. */
 remindersRoutes.post('/settings/tz', async (c) => {
   const userId = c.get('userId');
   const body = await c.req.json<{ tz?: unknown }>().catch(() => ({}) as { tz?: unknown });

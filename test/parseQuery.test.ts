@@ -20,6 +20,7 @@ function cluster(id: string, name: string): Cluster {
     centroid: null,
     size: 1,
     maturedAt: null,
+    maturityMilestone: 0,
     updatedAt: new Date(),
   };
 }

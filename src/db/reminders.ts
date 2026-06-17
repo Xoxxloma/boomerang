@@ -63,7 +63,7 @@ export async function claimDueReminders(now: Date, limit: number): Promise<Item[
 
 /**
  * Перенести напоминание на новое время и вернуть в очередь (status → pending). Без проверки владельца —
- * внутренний вызов из доставки (тихие часы) и «Отложить»; владелец уже подтверждён выше по стеку/коллбэку.
+ * внутренний вызов из «Отложить» (снуз); владелец уже подтверждён выше по стеку/коллбэку.
  */
 export async function deferReminder(itemId: string, remindAt: Date): Promise<void> {
   await db
@@ -82,12 +82,10 @@ export async function listUpcoming(userId: number, limit: number): Promise<Item[
     .limit(limit);
 }
 
-/** Настройки напоминаний пользователя: таймзона, дефолтный час, тихие часы. Все поля со здравыми дефолтами. */
+/** Настройки напоминаний пользователя: таймзона и дефолтный час. Все поля со здравыми дефолтами. */
 export interface ReminderSettings {
   tz: string;
   defaultHour: number;
-  quietStartHour: number;
-  quietEndHour: number;
 }
 
 /** Партиал из users.settings.reminder (jsonb) — что реально хранится; остальное добивается дефолтами. */
@@ -104,8 +102,6 @@ export async function getReminderSettings(userId: number): Promise<ReminderSetti
   return {
     tz: stored.tz ?? tuning.remindDefaultTz,
     defaultHour: stored.defaultHour ?? tuning.remindDefaultHour,
-    quietStartHour: stored.quietStartHour ?? tuning.remindQuietStartHour,
-    quietEndHour: stored.quietEndHour ?? tuning.remindQuietEndHour,
   };
 }
 
