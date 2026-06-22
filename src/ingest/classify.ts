@@ -1,43 +1,15 @@
 import { DateTime } from 'luxon';
 import { chatJson } from '../ai/llm.js';
 import {
-  CLASSIFY_SYSTEM,
-  classifyPrompt,
-  CLASSIFY_TITLE_SYSTEM,
-  classifyTitlePrompt,
-  CLASSIFY_REMIND_SYSTEM,
-  classifyRemindPrompt,
+  TITLE_SYSTEM,
+  titlePrompt,
+  REMIND_SYSTEM,
+  remindPrompt,
+  TITLE_REMIND_SYSTEM,
+  titleRemindPrompt,
 } from '../ai/prompts.js';
 import { tuning } from '../config/tuning.js';
-import { LINKS_SHELF } from '../cluster/assign.js';
-import { buildClassifySignal, isContentlessLink, type Indexable } from './extract.js';
-
-/**
- * L1-классификация по дешёвому сигналу: одна короткая категория (§5 Level 1).
- * Это «ощущение порядка» для человека, НЕ механизм поиска (поиск — по эмбеддингам).
- * В вехе 4 поверх этого появятся кластеры; промах тут не критичен.
- */
-export async function classify(it: Indexable, userId: number): Promise<string> {
-  // Ссылка-пустышка (ни подписи, ни OG, в URL только хост): темы нет — не зовём LLM гадать по
-  // домену (avito → ложная «Недвижимость»), кладём на нейтральную полку. Бесплатно и честно.
-  if (isContentlessLink(it)) return LINKS_SHELF;
-
-  const signal = buildClassifySignal(it);
-  if (!signal.trim()) return 'Разное';
-
-  try {
-    const { category } = await chatJson<{ category: string }>(classifyPrompt(signal), {
-      system: CLASSIFY_SYSTEM,
-      temperature: 0,
-      userId,
-      maxTokens: 64,
-    });
-    return cleanCategory(category);
-  } catch (err) {
-    console.error('classify error:', err);
-    return 'Разное';
-  }
-}
+import { buildClassifySignal, type Indexable } from './extract.js';
 
 /** Извлечённое из L1-детекта напоминание («верни в момент T»). */
 export interface DetectedReminder {
@@ -54,65 +26,92 @@ function isoToFutureDate(iso: string | null | undefined, now: Date): Date | null
 }
 
 /**
- * L1-классификация ПЛЮС детект «это инструкция-напоминание + когда» — одним LLM-вызовом (без доп.
- * запросов и регекса). Зовётся только на живом одиночном сообщении (гейт detectReminder в saveItem),
- * НЕ при импорте. Категория считается как в classify(); reminder — null, если юзер не просил напомнить.
+ * Детект «это инструкция-напоминание + когда» одним LLM-вызовом (без регекса). Зовётся только на живом
+ * одиночном сообщении (гейт detectReminder в saveItem), НЕ при импорте. Категорий больше нет — определяем
+ * только напоминание; reminder = null, если юзер не просил напомнить. Любой сбой → null (приём не падает).
  */
-export async function classifyWithReminder(
+export async function detectReminder(
   it: Indexable,
   userId: number,
   opts: { tz: string; now?: Date },
-): Promise<{ category: string; reminder: DetectedReminder | null }> {
-  if (isContentlessLink(it)) return { category: LINKS_SHELF, reminder: null };
+): Promise<{ reminder: DetectedReminder | null }> {
   const signal = buildClassifySignal(it);
-  if (!signal.trim()) return { category: 'Разное', reminder: null };
+  if (!signal.trim()) return { reminder: null };
 
   const now = opts.now ?? new Date();
   const nowIso = DateTime.fromJSDate(now).setZone(opts.tz).toISO() ?? now.toISOString();
   try {
-    const res = await chatJson<{ category: string; reminder?: { whenIso?: string | null } | null }>(
-      classifyRemindPrompt(signal, nowIso, tuning.remindDefaultHour),
-      { system: CLASSIFY_REMIND_SYSTEM, temperature: 0, userId, maxTokens: 110 },
+    const res = await chatJson<{ reminder?: { whenIso?: string | null } | null }>(
+      remindPrompt(signal, nowIso, tuning.remindDefaultHour),
+      { system: REMIND_SYSTEM, temperature: 0, userId, maxTokens: 80 },
     );
     const whenAt = isoToFutureDate(res.reminder?.whenIso, now);
-    return { category: cleanCategory(res.category), reminder: whenAt ? { whenAt } : null };
+    return { reminder: whenAt ? { whenAt } : null };
   } catch (err) {
-    // Фолбэк как у classify: тема «Разное», напоминания нет — пайплайн приёма не падает.
-    console.error('classifyWithReminder error:', err);
-    return { category: 'Разное', reminder: null };
+    console.error('detectReminder error:', err);
+    return { reminder: null };
   }
 }
 
-/** Валидация категории из LLM: общая для classify/classifyWithTitle/vision, чтобы правила не разошлись. */
-export function cleanCategory(category: string | undefined): string {
-  const cleaned = category?.trim();
-  return cleaned && cleaned.length <= 40 ? cleaned : 'Разное';
-}
-
 /**
- * Категория + заголовок ОДНИМ LLM-вызовом — для голосовых/видео после транскрипции (L2):
- * у них нет своего названия, без title запись в выдаче — пустышка. Один вызов вместо двух —
- * дешевле и не дублирует прогон того же сигнала. Фолбэк как у classify: любой сбой →
- * {'Разное', null} — пайплайн не падает (STT уже отработал, индекс по транскрипту ценен и так).
+ * Заголовок ОДНИМ LLM-вызовом — для голосовых/видео после транскрипции (L2): у них нет своего названия,
+ * без title запись в выдаче — пустышка. Фолбэк: любой сбой → null (пайплайн не падает, индекс по
+ * транскрипту ценен и так).
  */
 export async function classifyWithTitle(
   it: Indexable,
   userId: number,
-): Promise<{ category: string; title: string | null }> {
+): Promise<{ title: string | null }> {
   const signal = buildClassifySignal(it);
-  if (!signal.trim()) return { category: 'Разное', title: null };
+  if (!signal.trim()) return { title: null };
 
   try {
-    const res = await chatJson<{ category: string; title: string }>(classifyTitlePrompt(signal), {
-      system: CLASSIFY_TITLE_SYSTEM,
+    const res = await chatJson<{ title: string }>(titlePrompt(signal), {
+      system: TITLE_SYSTEM,
       temperature: 0,
       userId,
-      maxTokens: 128,
+      maxTokens: 96,
     });
     const title = res.title?.trim().slice(0, 80) || null;
-    return { category: cleanCategory(res.category), title };
+    return { title };
   } catch (err) {
     console.error('classifyWithTitle error:', err);
-    return { category: 'Разное', title: null };
+    return { title: null };
+  }
+}
+
+/**
+ * То же, что classifyWithTitle (заголовок для голоса/видео в L2), ПЛЮС детект «это напоминание + когда» —
+ * одним LLM-вызовом. Нужно для голосовых: их текст появляется только после STT (на L1 детектить нечего),
+ * а отдельный вызов ради reminder был бы лишней оплатой того же сигнала. now — опорное «сейчас» для
+ * относительных времён («через 5 минут»): передаём момент сообщения (item.createdAt), не текущий, чтобы
+ * задержка очереди/STT не съела минуты. Фолбэк как у classifyWithTitle.
+ */
+export async function classifyWithTitleAndReminder(
+  it: Indexable,
+  userId: number,
+  opts: { tz: string; now: Date },
+): Promise<{ title: string | null; reminder: DetectedReminder | null }> {
+  const signal = buildClassifySignal(it);
+  if (!signal.trim()) return { title: null, reminder: null };
+
+  const nowIso = DateTime.fromJSDate(opts.now).setZone(opts.tz).toISO() ?? opts.now.toISOString();
+  try {
+    const res = await chatJson<{
+      title: string;
+      reminder?: { whenIso?: string | null } | null;
+    }>(titleRemindPrompt(signal, nowIso, tuning.remindDefaultHour), {
+      system: TITLE_REMIND_SYSTEM,
+      temperature: 0,
+      userId,
+      maxTokens: 110,
+    });
+    const title = res.title?.trim().slice(0, 80) || null;
+    // Прошлое/мусор отбрасываем относительно РЕАЛЬНОГО сейчас (now() по умолчанию), не относительно opts.now.
+    const whenAt = isoToFutureDate(res.reminder?.whenIso, new Date());
+    return { title, reminder: whenAt ? { whenAt } : null };
+  } catch (err) {
+    console.error('classifyWithTitleAndReminder error:', err);
+    return { title: null, reminder: null };
   }
 }

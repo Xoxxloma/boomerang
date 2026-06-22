@@ -11,7 +11,6 @@ import {
   timestamp,
   vector,
   index,
-  uniqueIndex,
   primaryKey,
   date,
   numeric,
@@ -47,33 +46,9 @@ export const users = pgTable('users', {
   id: bigint('id', { mode: 'number' }).primaryKey(), // tg user id
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   importDone: boolean('import_done').default(false).notNull(),
-  // напр. { proactive_surfacing: false } — режим 2 выключен по умолчанию
+  // jsonb-настройки пользователя: { reminder: {...}, tz } — параметры доставки напоминаний
   settings: jsonb('settings').$type<Record<string, unknown>>().default({}).notNull(),
 });
-
-export const clusters = pgTable(
-  'clusters',
-  {
-    id: uuid('id').defaultRandom().primaryKey(),
-    userId: bigint('user_id', { mode: 'number' }).notNull(),
-    name: text('name').notNull(), // человеческое имя от LLM
-    centroid: vector('centroid', { dimensions: EMBEDDING_DIM }),
-    size: integer('size').default(0).notNull(),
-    // Когда по кластеру В ПОСЛЕДНИЙ РАЗ слали maturity (проактивное всплытие, режим 2). NULL — ни разу.
-    maturedAt: timestamp('matured_at', { withTimezone: true }),
-    // Последний кратный порогу рубеж СОДЕРЖАТЕЛЬНЫХ записей, на котором слали maturity (0 — ещё не слали).
-    // Повторяем «тема созрела» на каждом новом кратном (5, 10, 15…), а не один раз — гард по этому числу.
-    maturityMilestone: integer('maturity_milestone').default(0).notNull(),
-    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
-  },
-  (t) => [
-    index('clusters_user_idx').on(t.userId),
-    index('clusters_centroid_idx').using('hnsw', t.centroid.op('vector_cosine_ops')),
-    // Дубли одноимённых кластеров размывают recall по имени и плодят двойные папки в /folders.
-    // CI-уникальность (lower) + onConflict-фолбэк в createCluster закрывают гонку check-then-create.
-    uniqueIndex('clusters_user_name_ci_uq').on(t.userId, sql`lower(${t.name})`),
-  ],
-);
 
 export const items = pgTable(
   'items',
@@ -98,8 +73,6 @@ export const items = pgTable(
     // постом» — чтобы опоздавший член-осколок не уехал отдельной картинкой на полку (см. groupsAlreadyPosted).
     mediaGroupId: text('media_group_id'),
     embedding: vector('embedding', { dimensions: EMBEDDING_DIM }),
-    clusterId: uuid('cluster_id').references(() => clusters.id, { onDelete: 'set null' }),
-    clusterLocked: boolean('cluster_locked').default(false).notNull(), // правил вручную
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
     indexedAt: timestamp('indexed_at', { withTimezone: true }), // когда прошёл L2
     // Пользовательское напоминание («верни в момент T»): источник истины для cron-sweep раз в минуту.
@@ -110,7 +83,6 @@ export const items = pgTable(
   },
   (t) => [
     index('items_user_idx').on(t.userId),
-    index('items_cluster_idx').on(t.clusterId),
     index('items_user_media_group_idx').on(t.userId, t.mediaGroupId),
     index('items_embedding_idx').using('hnsw', t.embedding.op('vector_cosine_ops')),
     // Частичный индекс под sweep «отдай созревшие напоминания»: покрывает только строки с remind_at.
@@ -122,47 +94,7 @@ export const items = pgTable(
 
 export type Item = typeof items.$inferSelect;
 export type NewItem = typeof items.$inferInsert;
-export type Cluster = typeof clusters.$inferSelect;
 export type User = typeof users.$inferSelect;
-
-/**
- * Журнал проактивных всплытий (режим 2): что и когда показали боту по своей инициативе.
- * Назначение — дедуп (не показывать один и тот же старый item повторно слишком часто) +
- * минимальная история на будущее (сигнал, аналитика). Реакции/оценки в первой итерации не храним.
- */
-export const surfacingKind = pgEnum('surfacing_kind', ['resonance', 'maturity']);
-
-export const surfacingLog = pgTable(
-  'surfacing_log',
-  {
-    id: uuid('id').defaultRandom().primaryKey(),
-    userId: bigint('user_id', { mode: 'number' }).notNull(),
-    kind: surfacingKind('kind').notNull(),
-    itemId: uuid('item_id'), // показанный старый item (для resonance); NULL для maturity
-    clusterId: uuid('cluster_id'),
-    triggerItemId: uuid('trigger_item_id'), // новое сообщение-повод
-    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
-  },
-  (t) => [
-    index('surfacing_user_idx').on(t.userId),
-    index('surfacing_user_item_idx').on(t.userId, t.itemId),
-  ],
-);
-
-/**
- * Сессия правки категории: какой item правится для конкретного L1-сообщения.
- * Вынесена из памяти процесса в БД (durable + работает при нескольких инстансах бота).
- */
-export const editPending = pgTable(
-  'edit_pending',
-  {
-    chatId: bigint('chat_id', { mode: 'number' }).notNull(),
-    messageId: bigint('message_id', { mode: 'number' }).notNull(),
-    itemId: uuid('item_id').notNull(),
-    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
-  },
-  (t) => [primaryKey({ columns: [t.chatId, t.messageId] })],
-);
 
 /**
  * Сессия ввода «Своё время» для напоминания: к какому item относится force_reply-ответ.

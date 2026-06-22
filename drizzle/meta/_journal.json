@@ -85,6 +85,13 @@
       "when": 1781636786708,
       "tag": "0011_common_lethal_legion",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1781735932200,
+      "tag": "0012_faulty_killraven",
+      "breakpoints": true
     }
   ]
 }

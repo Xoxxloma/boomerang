@@ -15,7 +15,6 @@ export interface ItemDTO {
   sourceChat: string | null;
   /** Свой текст пользователя (подпись/пост/мысль) — для разворота карточки; усечён. НЕ ocr/транскрипт. */
   text: string | null;
-  clusterId: string | null;
   createdAt: string;
 }
 
@@ -37,7 +36,6 @@ export function toItemDTO(it: Item): ItemDTO {
     url: it.url || null,
     sourceChat: it.sourceChat || null,
     text,
-    clusterId: it.clusterId,
     createdAt: it.createdAt.toISOString(),
   };
 }

@@ -8,8 +8,7 @@ export interface AckRef {
 
 export interface ProcessJob {
   itemId: string;
-  seedCategory: string;
-  /** Сообщение «✅ Положил…» этого поста — правим его при сбое/успехе (есть только у одиночных пересылок). */
+  /** Сообщение приёма этого поста — правим его при сбое/успехе (есть только у одиночных пересылок). */
   ack?: AckRef;
   /** Повторная обработка по кнопке — при УСПЕХЕ обновить сообщение на «доиндексировал». */
   notifyOnSuccess?: boolean;
@@ -19,6 +18,11 @@ export interface ProcessJob {
    * tgFileId большой файл неотличим от gif (у которого нет аудиодорожки и предупреждать не о чем).
    */
   sttSkipReason?: 'too_big';
+  /**
+   * Живой одиночный голос/видео: детектить «напомни …» по транскрипту в L2 (на L1 текста ещё нет).
+   * Только для живого приёма (как флаг detectReminder на L1) — импорт/burst/альбом без него.
+   */
+  detectReminder?: boolean;
 }
 
 export interface FlushAlbumJob {
@@ -52,14 +56,14 @@ const BURST_REAP_SEC = 300;
  */
 export async function enqueueProcess(
   itemId: string,
-  seedCategory: string,
   ack?: AckRef,
   notifyOnSuccess = false,
   sttSkipReason?: 'too_big',
+  detectReminder = false,
 ): Promise<void> {
   await getBoss().send(
     Q_PROCESS,
-    { itemId, seedCategory, ack, notifyOnSuccess, sttSkipReason } satisfies ProcessJob,
+    { itemId, ack, notifyOnSuccess, sttSkipReason, detectReminder } satisfies ProcessJob,
     // deadLetter: исчерпав ретраи, задача копируется в Q_PROCESS_DLQ → оттуда правим сообщение поста.
     // retryDelay 8с: даём временному сбою (rate-limit/сеть) шанс, но не тянем — сбой всплывёт за ~25с.
     { singletonKey: itemId, retryLimit: 3, retryDelay: 8, deadLetter: Q_PROCESS_DLQ },

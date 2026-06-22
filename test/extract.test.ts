@@ -26,9 +26,9 @@ describe('buildIndexText', () => {
     expect(text).toContain('https://example.com');
   });
 
-  it('включает имя источника (для поиска по теме канала)', () => {
-    const text = buildIndexText({ ...base, sourceChat: 'SL4M & Counter-Strike' });
-    expect(text).toContain('SL4M & Counter-Strike');
+  it('НЕ включает имя источника (бренд/ирония смещает вектор не по смыслу — источник отдельный фасет)', () => {
+    const text = buildIndexText({ ...base, sourceChat: 'печеньки' });
+    expect(text).not.toContain('печеньки');
   });
 
   it('пропускает пустые поля', () => {

@@ -108,7 +108,7 @@ export async function getReminderSettings(userId: number): Promise<ReminderSetti
 /**
  * Слить частичные настройки напоминаний в users.settings.reminder, не затирая остальные ключи.
  * settings || {reminder: (старый reminder) || partial} — внешний `||` заменил бы весь reminder,
- * поэтому собираем reminder как merge старого и нового (паттерн setProactiveMode, но на под-объекте).
+ * поэтому собираем reminder как merge старого и нового (jsonb-merge, но на под-объекте).
  */
 export async function setReminderSettings(userId: number, partial: StoredReminderSettings): Promise<void> {
   await db

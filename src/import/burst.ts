@@ -242,7 +242,6 @@ function addResult(acc: BatchResult, r: BatchResult): BatchResult {
     // Счётчики точные; сэмплы имён — обрезаем (для UI достаточно нескольких).
     existingDupes: [...acc.existingDupes, ...r.existingDupes].slice(0, DUPE_SAMPLE_CAP),
     inBatchDupes: [...acc.inBatchDupes, ...r.inBatchDupes].slice(0, DUPE_SAMPLE_CAP),
-    totalClusters: r.totalClusters, // итоговое число кластеров — из последней волны
     stoppedForBudget: acc.stoppedForBudget || r.stoppedForBudget,
   };
 }
@@ -297,7 +296,7 @@ export async function flushBurst(api: Api, userId: number): Promise<BatchResult 
         if (stillArriving) {
           await enqueueBurstReflush(userId);
           return { saved: 0, images: 0, skipped: 0, existingDupes: [], inBatchDupes: [],
-            existingDupeCount: 0, inBatchDupeCount: 0, totalClusters: 0, deferred: true };
+            existingDupeCount: 0, inBatchDupeCount: 0, deferred: true };
         }
       }
 
@@ -354,7 +353,6 @@ export async function flushBurst(api: Api, userId: number): Promise<BatchResult 
           inBatchDupes: [],
           existingDupeCount: 0,
           inBatchDupeCount: 0,
-          totalClusters: 0,
           stoppedForBudget: true,
         }
       );

@@ -12,15 +12,15 @@
 
 1. `ensureUser` — на любое сообщение upsert пользователя в БД по tg-id.
 2. `registerCommands` — `/start`, `/help`, `/digest`.
-3. `registerCallbacks` — инлайн-кнопки (правка категории, переход к источнику).
+3. `registerCallbacks` — инлайн-кнопки (напомнить, удалить, переход к источнику).
 4. `registerSearch` — ловит вопросы. **Регистрируется ДО приёма**, иначе вопрос «что я сохранял…»
    сохранился бы как заметка вместо поиска.
 5. `registerIngest` — всё остальное → сохранение.
 
 ## Три уровня обработки (чтобы UX не тормозил)
 
-- **L1 — синхронно:** мгновенное «Принял ✅» → дешёвая классификация → edit сообщения.
-- **L2 — фон (очередь):** OCR, чтение документов, эмбеддинги, отнесение к кластеру.
+- **L1 — синхронно:** мгновенное «Принял ✅» → (живой приём) детект «напомни …» → постановка L2.
+- **L2 — фон (очередь):** OCR/vision, чтение документов, STT, эмбеддинги; заголовок → финал «✅ Принял — …».
 - **L3 — по требованию:** глубокое чтение. *На текущий момент документы читаются сразу в L2
   (eager), а не лениво — это упрощение, см. ROADMAP.*
 
@@ -42,7 +42,7 @@
 - документ / голос → свои типы;
 - **медиа (фото/видео) + содержательная подпись** (`hasMeaningfulCaption`: ≥16 символов или ≥3 слов)
   → это **пост** (`tg_post`/`text`), классифицируем по подписи;
-- медиа без подписи → `image` (полка «Изображения») / `video` (медиа-полка);
+- медиа без подписи → `image` / `video`;
 - есть URL → `link`; переслано → `tg_post`; иначе → `text`.
 
 **Дешёвый сигнал по типу** (внутри `saveItem`):
@@ -55,12 +55,11 @@
 `title`, `description`, `file_path`, **`tg_message_id`** (id исходного сообщения — для перехода к
 источнику).
 
-**Классификация** — [src/ingest/classify.ts](src/ingest/classify.ts): дешёвый LLM-вызов
-(`gpt-4o-mini`, строгий JSON) по первым ~500 символам сигнала ([src/ingest/extract.ts](src/ingest/extract.ts)
-`buildClassifySignal`) → короткая категория. Картинки без подписи LLM не зовут — сразу полка «Изображения».
+**Детект напоминания** — на живом одиночном приёме text/link/doc [src/ingest/classify.ts](src/ingest/classify.ts)
+`detectReminder` тем же дешёвым LLM-вызовом ловит «напомни …» (категорий нет — только напоминание).
 
-**Edit сообщения:** бот редактирует своё «Принял» → **«✅ Положил в «Категория»»** + кнопка
-«🔀 Не та категория». Выглядит, будто бот подумал.
+**Edit сообщения:** финал делает L2 — бот редактирует «Принял» → **«✅ Принял — «{заголовок}»»**
+(заголовок: OG-title ссылки, имя файла, vision/STT-резюме). Без кнопок: управление записью — в карточке.
 
 **Альбомы** ([src/ingest/album.ts](src/ingest/album.ts)): есть подпись в группе → создаётся **ОДИН**
 пост по подписи (медиа-файлы игнорируем); подписи нет → каждый член отдельно.
@@ -76,14 +75,11 @@
    `ocr_text`. **Только в индекс, пользователю не показываем** (там бывает «каша»).
 2. **Документ** → [src/content/documents.ts](src/content/documents.ts) читает PDF/Word/txt целиком →
    дописывает в `raw_text` (один раз, до индексации).
-3. **Эмбеддинг** → `buildIndexText` (title+desc+raw+ocr+transcript+url, до 8000 симв.) →
+3. **Голос/видео** → STT [src/ai/stt.ts](src/ai/stt.ts) (Groq whisper) → `transcript` (скрытый) +
+   LLM-заголовок (`classifyWithTitle`), на живом приёме — заодно детект «напомни …».
+4. **Эмбеддинг** → `buildIndexText` (title+desc+raw+ocr+transcript+url, БЕЗ источника, до 8000 симв.) →
    [src/ai/embeddings.ts](src/ai/embeddings.ts) (OpenAI `text-embedding-3-small`, вектор **1536**) →
-   запись в `embedding` + `indexed_at`.
-4. **Кластер** → [src/cluster/assign.ts](src/cluster/assign.ts): картинки → полка «Изображения»;
-   остальное → ближайший центроид по косинусу (`assignCluster`, порог ≥0.45) **или** новый кластер.
-   Центроид обновляется бегущим средним ([src/cluster/math.ts](src/cluster/math.ts)).
-
-> Голос (`voice`) в MVP не транскрибируется (Whisper отложен) → остаётся без текста и не индексируется.
+   запись в `embedding` + `indexed_at`. Кластеризации/категорий нет — организация по источнику, поиск по вектору.
 
 ---
 
@@ -108,11 +104,10 @@
 
 ## Побочные потоки
 
-- **Правка категории** ([src/bot/handlers/callbacks.ts](src/bot/handlers/callbacks.ts)): кнопка «🔀» →
-  список кластеров → перенос + `cluster_locked=true` (ручная правка учит систему, подтягивает центроид).
-  Это «ров» из спеки.
-- **Дайджест** `/digest` ([src/retrieval/digest.ts](src/retrieval/digest.ts)): группирует сохранённое
-  за 7 дней по кластерам → LLM формулирует «вот темы, что тебя зацепили» (режим 3).
+- **Папки по источнику** `/folders` ([src/bot/handlers/browse.ts](src/bot/handlers/browse.ts)): список
+  каналов (`sourceChat`) + «📥 Загружено вручную» (`sourceChat IS NULL`). Детерминированно, без ярлыков.
+- **Дайджест** `/digest` ([src/retrieval/digest.ts](src/retrieval/digest.ts)): простой список последней
+  активности за 7 дней (свежие сверху, со ссылками), без тем и LLM.
 
 ---
 
@@ -121,11 +116,10 @@
 Postgres + pgvector, Drizzle ([src/db/schema.ts](src/db/schema.ts)):
 
 - **users** — `id` (tg user id), `settings` (jsonb), `import_done`.
-- **clusters** — `name` (имя кластера), `centroid` (vector 1536), `size`.
-- **items** — `type`, `raw_text`, `url`, `title`, `description`, `ocr_text` (скрытый),
-  `embedding` (vector 1536), `cluster_id`, `cluster_locked`, `tg_message_id`, `indexed_at`.
-- Индексы: **HNSW** на `items.embedding` и `clusters.centroid` (`vector_cosine_ops`) — быстрый
-  семантический поиск.
+- **items** — `type`, `raw_text`, `url`, `title`, `description`, `ocr_text` (скрытый), `transcript`
+  (скрытый), `embedding` (vector 1536), `source_chat`, `tg_message_id`, `indexed_at`, `remind_*`.
+- Индексы: **HNSW** на `items.embedding` (`vector_cosine_ops`) — быстрый семантический поиск (и item-kNN
+  рёбра созвездия).
 
 ---
 

@@ -13,9 +13,12 @@ import {
   markIndexed,
 } from '../../db/items.js';
 import { buildIndexText } from '../../ingest/extract.js';
-import { classify, classifyWithTitle } from '../../ingest/classify.js';
-import { assignCluster, assignToShelf, IMAGE_SHELF } from '../../cluster/assign.js';
-import { maybeSurface } from '../../retrieval/proactive.js';
+import {
+  classifyWithTitle,
+  classifyWithTitleAndReminder,
+  type DetectedReminder,
+} from '../../ingest/classify.js';
+import { getReminderSettings, setReminder } from '../../db/reminders.js';
 import { ocrImage } from '../../content/ocr.js';
 import { readDocument } from '../../content/documents.js';
 import { withTempFile } from '../../content/files.js';
@@ -43,32 +46,24 @@ async function persistEmbedding(itemId: string, emb: number[]): Promise<void> {
   throw lastErr;
 }
 
-/** Итог L2: имя реальной полки (для финализации «Положил в …») + честный флаг нечитаемого документа. */
+/** Итог L2: честный флаг нечитаемого документа (для предупреждения юзеру в финале). */
 export interface ProcessResult {
-  /** null — картинка/без кластера/cluster_locked: реконсилировать нечего. */
-  clusterName: string | null;
   /** Документ пробовали читать, но тело извлечь не вышло (скан/неподдержанный формат) — юзера надо предупредить. */
   docUnreadable: boolean;
 }
 
 /**
- * L2-пайплайн фоном: (OCR для картинок) → эмбеддинг → отнесение к кластеру.
- * seedCategory — имя для нового кластера (из L1), чтобы не звать LLM повторно.
+ * L2-пайплайн фоном: (OCR/vision для картинок, чтение документа, STT для голоса) → эмбеддинг.
+ * Категорий/кластеров больше нет: организация по источнику, поиск — по вектору. На L2 добываем
+ * только содержание (description/transcript/тело) и title (показать юзеру) + детект напоминания у голоса.
  */
-export async function processItem(itemId: string, seedCategory: string): Promise<ProcessResult> {
+export async function processItem(
+  itemId: string,
+  opts?: { detectReminder?: boolean },
+): Promise<ProcessResult> {
   let docUnreadable = false;
-  // L2 добыл НОВЫЙ контент, которого L1 не видел (тело документа; в будущем — транскрипция войса,
-  // OCR скана): L1-seed построен по дешёвому сигналу (имя файла) и устарел → перед кластеризацией
-  // освежаем категорию тем же дешёвым classify, но уже по обогащённой записи. Общий хук для всех
-  // типов с «поздним» контентом — не плодим точечные правила на каждый тип.
-  let enriched = false;
   let item = await getItem(itemId);
-  if (!item) return { clusterName: null, docUnreadable };
-
-  // Свежая категория, добытая на L2 «поздним» контентом (vision у картинок, транскрипт у голосовых) —
-  // мимо общего enriched-хука: тот позвал бы classify ВТОРЫМ вызовом, а у этих типов категория уже
-  // пришла из своего LLM-вызова (describeImage/classifyWithTitle) — двойная оплата того же ответа.
-  let freshSeed: string | null = null;
+  if (!item) return { docUnreadable };
 
   // Картинки: OCR + vision-аннотация в ОДНОМ скачивании файла (§3.4). OCR первым и сразу в БД —
   // частичный ретрай (vision упал) не платит за OCR повторно; vision вторым, гейт !description
@@ -104,7 +99,6 @@ export async function processItem(itemId: string, seedCategory: string): Promise
       if (annotation.description) await setDescription(itemId, annotation.description);
       // Заголовок — только если своего нет: осмысленный title не затираем LLM-резюме.
       if (annotation.title && !itemRef.title?.trim()) await setTitle(itemId, annotation.title);
-      if (annotation.category !== 'Разное') freshSeed = annotation.category;
     }
     // description/title/ocr попадут в buildIndexText → в эмбеддинг ниже.
     item = (await getItem(itemId)) ?? item;
@@ -122,7 +116,6 @@ export async function processItem(itemId: string, seedCategory: string): Promise
       const caption = item.rawText?.trim();
       await setRawText(itemId, caption ? `${caption}\n\n${body}` : body);
       item = (await getItem(itemId)) ?? item;
-      enriched = true; // L1 видел только имя файла — категорию надо освежить по телу
     } else {
       // Читать пробовали, тела нет (скан без текстового слоя / неподдержанный формат / файл недоступен) —
       // честно скажем юзеру (worker), а не оставим тихую пустышку «как будто всё ок».
@@ -148,69 +141,41 @@ export async function processItem(itemId: string, seedCategory: string): Promise
     if (text) {
       await setTranscript(itemId, text);
       item = (await getItem(itemId)) ?? item;
-      // enriched НЕ взводим: реклассификация уже здесь (одним вызовом с заголовком). Общий
-      // enriched-хук позвал бы classify ВТОРОЙ раз по тому же сигналу — двойная оплата того же ответа.
-      const res = await classifyWithTitle(item, item.userId);
+      // Заголовок одним вызовом по транскрипту (голос/видео без своего названия). Живой одиночный
+      // голос/видео: тем же вызовом ловим «напомни …» (на L1 текста ещё не было). now=createdAt —
+      // относительные времена («через 5 минут») считаем от момента сообщения, не от L2.
+      const itemRef2 = item;
+      const res: { title: string | null; reminder?: DetectedReminder | null } = opts?.detectReminder
+        ? await classifyWithTitleAndReminder(itemRef2, itemRef2.userId, {
+            tz: (await getReminderSettings(itemRef2.userId)).tz,
+            now: itemRef2.createdAt,
+          })
+        : await classifyWithTitle(itemRef2, itemRef2.userId);
       // Заголовок — только если своего нет: теги трека «Исполнитель — Название» не затираем резюме текста песни.
       if (res.title && !item.title?.trim()) {
         await setTitle(itemId, res.title);
         item = (await getItem(itemId)) ?? item; // title попадёт в indexText → в эмбеддинг
       }
-      if (res.category !== 'Разное') freshSeed = res.category;
+      // Напоминание из расшифровки: ставим тихо (status pending) — финал worker допишет «🪃 Верну …»
+      // через remindLine. Реклассификация без флага возвращает res без reminder (undefined).
+      if (res.reminder) {
+        await setReminder(itemId, itemRef2.userId, res.reminder.whenAt);
+      }
     }
   }
 
   const indexText = buildIndexText(item).slice(0, MAX_EMBED_CHARS);
-  // Идемпотентность ретрая: если вектор уже в БД (джоба упала ПОСЛЕ эмбеддинга — напр. в кластеризации
-  // / maybeSurface), НЕ зовём embed() повторно — иначе платный эмбеддинг считается дважды (бюджет-гард).
+  // Идемпотентность ретрая: если вектор уже в БД (джоба упала ПОСЛЕ эмбеддинга), НЕ зовём embed()
+  // повторно — иначе платный эмбеддинг считается дважды (бюджет-гард).
   let emb: number[] | null = item.embedding ?? null;
   if (!emb && indexText.trim()) {
     emb = await embed(indexText, item.userId);
-    await persistEmbedding(itemId, emb);
-  }
-
-  // Имя реальной полки (для шага «Положил в …»). Картинки/без-кластера/locked → null (не финализируем).
-  let clusterName: string | null = null;
-
-  if (item.type === 'image' && (!freshSeed || !emb)) {
-    // Vision не дал темы (сбой / «Разное» / нечего эмбеддить) — фолбэк-полка «Изображения», как до
-    // фичи. Если уже на полке (заливка пачкой проставила cluster заранее) — не переназначаем: этот
-    // прогон лишь до-OCR-ил и обновил эмбеддинг, повторный assignToShelf задвоил бы центроид полки.
-    if (!item.clusterId) await assignToShelf(item.userId, IMAGE_SHELF, itemId, emb);
-  } else if (emb) {
-    const withEmb = await getItem(itemId);
-    // Гейт идемпотентности: при ретрае (напр. упал maybeSurface) item уже отнесён — повторный
-    // assignCluster задвоил бы его в центроиде/размере. Как и на пути картинок (!item.clusterId).
-    if (withEmb && !withEmb.clusterId) {
-      // Запись обогащена на L2 → освежаем seed по реальному контенту (тело документа даёт «Ремонт»,
-      // а не «Документы» из имени файла) — тогда seed-вето в assignCluster сравнивает эмбеддинг с
-      // категорией, видевшей ТОТ ЖЕ контент. «Разное» = classify не справился (внутренний фолбэк
-      // на любой сбой) — не затираем им осмысленный L1-seed.
-      let seed = seedCategory;
-      if (freshSeed) {
-        // Голос/видео/картинка: категория уже пришла из своего LLM-вызова (STT-ветка / vision) — не дублируем.
-        seed = freshSeed;
-      } else if (enriched) {
-        const fresh = await classify(withEmb, withEmb.userId);
-        if (fresh !== 'Разное') seed = fresh;
-      }
-      const res = await assignCluster(withEmb, seed);
-      clusterName = res?.name ?? null;
-      // Проактивное всплытие (режим 2) — best-effort: его падение НЕ должно ронять джобу и гонять
-      // переотнесение по кругу. Логируем и идём дальше.
-      if (res) {
-        try {
-          await maybeSurface(withEmb, res);
-        } catch (err) {
-          console.error('maybeSurface error:', err);
-        }
-      }
-    }
+    await persistEmbedding(itemId, emb); // setEmbedding проставит indexedAt
   }
 
   // Индексировать было нечего (нет текста на эмбеддинг) — но обработка прошла. Помечаем как
   // обработанное, чтобы такие записи не висели «застрявшими» наравне с реальными сбоями (см. findStuckItems).
   if (!emb) await markIndexed(itemId);
 
-  return { clusterName, docUnreadable };
+  return { docUnreadable };
 }

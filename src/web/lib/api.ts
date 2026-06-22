@@ -1,12 +1,5 @@
 import { getInitData } from './telegram.js';
-import type {
-  SearchResponse,
-  MapResponse,
-  BridgeResponse,
-  ClusterItemsResponse,
-  EchoResponse,
-  UpcomingResponse,
-} from './types.js';
+import type { SearchResponse, MapResponse, EchoResponse, UpcomingResponse } from './types.js';
 
 /** Ошибка API с кодом статуса — экраны различают 429 (бюджет) и прочие. */
 export class ApiError extends Error {
@@ -39,15 +32,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 export const api = {
   search: (query: string) =>
     request<SearchResponse>('/search', { method: 'POST', body: JSON.stringify({ query }) }),
-  synthesize: (clusterId: string) =>
-    request<SearchResponse>('/synthesize', {
-      method: 'POST',
-      body: JSON.stringify({ clusterId }),
-    }),
   map: () => request<MapResponse>('/map'),
-  bridge: (a: string, b: string) =>
-    request<BridgeResponse>(`/map/bridge?a=${encodeURIComponent(a)}&b=${encodeURIComponent(b)}`),
-  clusterItems: (id: string) => request<ClusterItemsResponse>(`/clusters/${id}/items`),
   echo: () => request<EchoResponse>('/echo'),
 
   // --- Напоминания ---

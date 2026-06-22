@@ -7,12 +7,13 @@ export type Indexable = Pick<
 >;
 
 /**
- * Текст для эмбеддинга: всё содержательное, что есть под рукой.
- * Включает ocr_text, transcript и имя источника (§10) — они невидимо улучшают поиск
- * (напр. «киберспорт» найдёт пост из канала про Counter-Strike, даже если в подписи этого слова нет).
+ * Текст для эмбеддинга: только СОДЕРЖАНИЕ записи (title/описание/текст/OCR/транскрипт/url).
+ * Имя источника (sourceChat) СЮДА НЕ кладём: оно часто бренд/ирония («печеньки» у новостного канала)
+ * и смещало бы вектор не по смыслу поста. Источник — отдельный детерминированный фасет (/folders, поиск
+ * по каналу), не часть семантики.
  */
 export function buildIndexText(it: Indexable): string {
-  return [it.title, it.description, it.rawText, it.ocrText, it.transcript, it.sourceChat, it.url]
+  return [it.title, it.description, it.rawText, it.ocrText, it.transcript, it.url]
     .filter((s): s is string => Boolean(s && s.trim()))
     .join('\n')
     .trim();

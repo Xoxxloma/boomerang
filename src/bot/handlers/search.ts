@@ -73,12 +73,12 @@ export async function handleQuery(ctx: Context, query: string): Promise<void> {
     return;
   }
 
-  // Разбор запроса: фильтры (тип/время) + синонимы + категории. Сам fail-safe, но подстрахуемся.
+  // Разбор запроса: фильтры (тип/время) + синонимы. Сам fail-safe, но подстрахуемся.
   let parsed;
   try {
     parsed = await parseQuery(userId, query);
   } catch {
-    parsed = { query, types: [], sinceDays: null, expansions: [], clusterIds: [] };
+    parsed = { query, types: [], sinceDays: null, expansions: [] };
   }
   const hasFilter = parsed.types.length > 0 || parsed.sinceDays !== null;
 
@@ -109,7 +109,6 @@ export async function handleQuery(ctx: Context, query: string): Promise<void> {
       types: parsed.types,
       sinceDays: parsed.sinceDays,
       expansions: parsed.expansions,
-      clusterIds: parsed.clusterIds,
     });
   } catch (err) {
     // Эмбеддинг/БД отвалились (напр. OpenAI через VPN) — поиск это главный сценарий, нельзя молчать.

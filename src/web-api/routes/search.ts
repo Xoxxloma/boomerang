@@ -30,7 +30,7 @@ searchRoutes.post('/search', async (c) => {
   try {
     parsed = await parseQuery(userId, query);
   } catch {
-    parsed = { query, types: [], sinceDays: null, expansions: [], clusterIds: [] };
+    parsed = { query, types: [], sinceDays: null, expansions: [] };
   }
   const hasFilter = parsed.types.length > 0 || parsed.sinceDays !== null;
 
@@ -49,7 +49,6 @@ searchRoutes.post('/search', async (c) => {
     types: parsed.types,
     sinceDays: parsed.sinceDays,
     expansions: parsed.expansions,
-    clusterIds: parsed.clusterIds,
   });
 
   if (hits.length === 0) return c.json({ mode: 'empty', answer: null, sources: [], cited: [] });

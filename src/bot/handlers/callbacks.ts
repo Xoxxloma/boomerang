@@ -1,23 +1,6 @@
 import { InlineKeyboard, type Bot, type Context } from 'grammy';
-import { getItem, deleteItem, itemDisplayName, listClusterContentFields } from '../../db/items.js';
-import { hasRealContent } from '../../ingest/extract.js';
+import { getItem, deleteItem, itemDisplayName } from '../../db/items.js';
 import { enqueueProcess } from '../../queue/index.js';
-import { IMAGE_SHELF } from '../../cluster/assign.js';
-import { classify } from '../../ingest/classify.js';
-import { respondWithSynthesis } from './search.js';
-import { listClusterItems } from '../../retrieval/search.js';
-import { checkUserBudget, formatResetUtc } from '../../ai/usage.js';
-import { tuning } from '../../config/tuning.js';
-import {
-  assignItemCluster,
-  createCluster,
-  findClusterByNameCI,
-  getCluster,
-  listClusters,
-  recomputeClusterStats,
-} from '../../db/clusters.js';
-import { setEditPending, getEditPending, delEditPending } from '../../db/sessions.js';
-import { setProactiveMode } from '../../db/users.js';
 import { discardEmptyImport, startImport } from '../../import/burst.js';
 import type { Item } from '../../db/schema.js';
 
@@ -49,10 +32,10 @@ function cardKeyboard(item: Item): InlineKeyboard {
   if (item.url) kb.url('🔗 Открыть', item.url);
   if (item.tgMessageId) kb.text('↑ Источник', `src:${item.id}`);
   if (item.url || item.tgMessageId) kb.row();
-  // Управление записью живёт здесь (а не на сообщении-приёме «Положил в…»): напомнить + поправить
-  // категорию + удалить. fix:/rem:/delc: уже зарегистрированы.
-  kb.text('🪃 Напомнить', `rem:${item.id}`).text('🔀 Не та категория', `fix:${item.id}`).row();
-  kb.text('🗑 Удалить', `delc:${item.id}`).text('✕', 'close');
+  // Управление записью живёт здесь (а не на сообщении-приёме): напомнить + удалить. Категорий нет —
+  // организация по источнику. rem:/delc: уже зарегистрированы.
+  kb.text('🪃 Напомнить', `rem:${item.id}`).text('🗑 Удалить', `delc:${item.id}`).row();
+  kb.text('✕', 'close');
   return kb;
 }
 
@@ -135,16 +118,6 @@ async function showCard(ctx: Context, item: Item): Promise<void> {
   lastCard.set(chatId, sent.message_id);
 }
 
-/** Клавиатура под L1-сообщением: напомнить + поправить категорию + удалить из архива. */
-export function fixKeyboard(itemId: string): InlineKeyboard {
-  return new InlineKeyboard()
-    .text('🪃 Напомнить', `rem:${itemId}`)
-    .row()
-    .text('🔀 Не та категория', `fix:${itemId}`)
-    .row()
-    .text('🗑 Удалить', `del:${itemId}`);
-}
-
 /**
  * Клавиатура под сообщением о дубле: «↑ Источник» (реплай к оригиналу — единственный нативный
  * способ «дать ссылку» в личке) + удаление. 🔗 Открыть — если у записи есть внешний url.
@@ -159,145 +132,8 @@ export function sourceKeyboard(item: Item): InlineKeyboard {
 }
 
 export function registerCallbacks(bot: Bot): void {
-  // Шаг 1: показать список существующих категорий для переноса.
-  bot.callbackQuery(/^fix:(.+)$/, async (ctx) => {
-    const itemId = ctx.match[1]!;
-    const userId = ctx.from.id;
-    const msg = ctx.callbackQuery.message;
-    if (!msg) return ctx.answerCallbackQuery();
-
-    // Item мог быть удалён пользователем — не показываем выбор категории «в пустоту».
-    if (!(await getItem(itemId))) {
-      return ctx.answerCallbackQuery({ text: 'Запись не найдена', show_alert: true });
-    }
-
-    const cs = await listClusters(userId);
-
-    await setEditPending(msg.chat.id, msg.message_id, itemId);
-
-    // Существующие категории (до 12) + всегда возможность завести новую вручную.
-    const kb = new InlineKeyboard();
-    for (const c of cs.slice(0, 12)) {
-      kb.text(c.name, `pick:${c.id}`).row();
-    }
-    kb.text('➕ Новая категория', `newcat:${itemId}`).row();
-    kb.text('⬅ Назад', `unfix:${itemId}`);
-    await ctx.editMessageReplyMarkup({ reply_markup: kb });
-    await ctx.answerCallbackQuery();
-  });
-
-  // Выход из режима выбора категории обратно к кнопкам карточки — чтобы не было дедлока. Правка
-  // категории зовётся из карточки события, поэтому возвращаем cardKeyboard (а не fix-клавиатуру).
-  bot.callbackQuery(/^unfix:(.+)$/, async (ctx) => {
-    const itemId = ctx.match[1]!;
-    const item = await getItem(itemId);
-    const kb = item ? cardKeyboard(item) : new InlineKeyboard().text('✕', 'close');
-    await ctx.editMessageReplyMarkup({ reply_markup: kb }).catch(() => {});
-    await ctx.answerCallbackQuery();
-  });
-
-  // Шаг 2: перенести item в выбранную категорию (ручная правка → lock).
-  bot.callbackQuery(/^pick:(.+)$/, async (ctx) => {
-    const clusterId = ctx.match[1]!;
-    const msg = ctx.callbackQuery.message;
-    if (!msg) return ctx.answerCallbackQuery();
-
-    const itemId = await getEditPending(msg.chat.id, msg.message_id);
-    if (!itemId) {
-      return ctx.answerCallbackQuery({ text: 'Сессия правки истекла', show_alert: true });
-    }
-
-    const cluster = await getCluster(clusterId);
-    if (!cluster || cluster.userId !== ctx.from.id) {
-      return ctx.answerCallbackQuery({ text: 'Категория не найдена' });
-    }
-
-    const item = await getItem(itemId);
-    if (!item || item.userId !== ctx.from.id) {
-      await delEditPending(msg.chat.id, msg.message_id);
-      return ctx.answerCallbackQuery({ text: 'Запись не найдена', show_alert: true });
-    }
-
-    // Ручная правка учит систему: фиксируем и пересчитываем центроид/size кластера от истины.
-    const prevClusterId = item.clusterId;
-    await assignItemCluster(itemId, clusterId, true);
-    await recomputeClusterStats(clusterId);
-    // Запись ушла из прежнего кластера — его статистику тоже пересчитываем (иначе центроид/size «помнят» её).
-    if (prevClusterId && prevClusterId !== clusterId) await recomputeClusterStats(prevClusterId);
-
-    await delEditPending(msg.chat.id, msg.message_id);
-    // Карточку не затираем (она может быть фото — editMessageText упал бы): возвращаем её кнопки и
-    // подтверждаем перенос тостом.
-    await ctx.editMessageReplyMarkup({ reply_markup: cardKeyboard(item) }).catch(() => {});
-    await ctx.answerCallbackQuery({ text: `Перенёс в «${cluster.name}»` });
-  });
-
-  // Opt-in проактивных всплытий (режим 2): ответ на первый образец / переключатель из /settings.
-  bot.callbackQuery('optin:on', async (ctx) => {
-    await setProactiveMode(ctx.from.id, 'on');
-    await ctx.editMessageReplyMarkup({}).catch(() => {});
-    await ctx.answerCallbackQuery({ text: 'Включил напоминания' });
-  });
-  bot.callbackQuery('optin:off', async (ctx) => {
-    await setProactiveMode(ctx.from.id, 'off');
-    await ctx.editMessageReplyMarkup({}).catch(() => {});
-    await ctx.answerCallbackQuery({ text: 'Ок, не буду напоминать' });
-  });
-
-  // «📋 Свести «тему»» → связный синтез по РЕАЛЬНЫМ записям кластера (clusterId у нас есть). НЕ гоним
-  // имя темы через handleQuery/parseQuery: иначе имя-как-вид-материала («Документы») распознаётся как
-  // фильтр-тип и уводит в плоский список без синтеза. respondWithSynthesis сам уважает degraded-фоллбэк.
-  bot.callbackQuery(/^synth:(.+)$/, async (ctx) => {
-    const clusterId = ctx.match[1]!;
-    const userId = ctx.from.id;
-    const cluster = await getCluster(clusterId);
-    if (!cluster || cluster.userId !== userId) {
-      return ctx.answerCallbackQuery({ text: 'Тема не найдена', show_alert: true });
-    }
-
-    // Изображения не сводятся (нет текста, §3.4). Кнопку для полки не даём, но старая (stale) могла
-    // остаться в прежнем сообщении — отвечаем честно, а не гоним LLM на «отказ».
-    if (cluster.name === IMAGE_SHELF) {
-      return ctx.answerCallbackQuery({
-        text: 'По изображениям сводка не строится — у них нет текста.',
-        show_alert: true,
-      });
-    }
-
-    // Бюджет-гард (как в handleQuery): не тратим синтез сверх персонального/глобального потолка.
-    const budget = checkUserBudget(userId);
-    if (!budget.allowed) {
-      return ctx.answerCallbackQuery({
-        text:
-          budget.reason === 'user'
-            ? `Дневной лимит запросов исчерпан. Обновится в ${formatResetUtc(budget.resetsAt)}.`
-            : 'Синтез временно недоступен из-за нагрузки — попробуй позже.',
-        show_alert: true,
-      });
-    }
-
-    const clusterItems = await listClusterItems(userId, clusterId, tuning.synthMaxSources);
-    if (clusterItems.length === 0) {
-      return ctx.answerCallbackQuery({ text: 'В этой теме пока нечего сводить', show_alert: true });
-    }
-
-    await ctx.answerCallbackQuery({ text: 'Свожу…' });
-    const hits = clusterItems.map((item) => ({ item, similarity: 1 }));
-    // Честность сводки: пустышки (только имя файла/URL) фактов не дадут и могут не процитироваться —
-    // молчаливое «исчезновение» источников выглядит багом. Считаем по ПОЛНОМУ кластеру (лёгкий селект,
-    // listClusterItems обрезан synthMaxSources) и говорим прямо.
-    const fields = await listClusterContentFields(userId, clusterId);
-    const empty = fields.filter((f) => !hasRealContent(f)).length;
-    const footnote =
-      empty > 0
-        ? `ℹ️ Ещё ${empty} матер. в теме не прочитаны (только имя файла/ссылка) — фактов из них в сводке нет.`
-        : undefined;
-    await respondWithSynthesis(ctx, cluster.name, hits, userId, { footnote });
-  });
-
   // «Повторить» из сообщения о сбое индексации — перезапуск L2 для КОНКРЕТНОЙ записи (это сообщение).
-  // Категорию L1 не персистим → восстанавливаем классификацией (картинкам — полка). notifyOnSuccess:
-  // при успехе воркер обновит это же сообщение на «доиндексировал».
+  // notifyOnSuccess: при успехе воркер обновит это же сообщение на «доиндексировал».
   bot.callbackQuery(/^reidx:(.+)$/, async (ctx) => {
     const itemId = ctx.match[1]!;
     const item = await getItem(itemId);
@@ -306,8 +142,7 @@ export function registerCallbacks(bot: Bot): void {
     }
     const msg = ctx.callbackQuery.message;
     const ack = msg ? { chatId: msg.chat.id, messageId: msg.message_id } : undefined;
-    const seed = item.type === 'image' ? IMAGE_SHELF : await classify(item, item.userId);
-    await enqueueProcess(itemId, seed, ack, true);
+    await enqueueProcess(itemId, ack, true);
     await ctx.editMessageText(`🔄 Повторяю «${itemDisplayName(item)}»…`).catch(() => {});
     await ctx.answerCallbackQuery({ text: 'Повторяю…' });
   });
@@ -378,21 +213,7 @@ export function registerCallbacks(bot: Bot): void {
     }
   });
 
-  // Удаление — подтверждение НА МЕСТЕ (правим клавиатуру того же сообщения, не шлём вниз).
-  // del: — кнопка из fixKeyboard (сообщение-приём); delc: — кнопка из карточки источника.
-  bot.callbackQuery(/^del:(.+)$/, async (ctx) => {
-    const itemId = ctx.match[1]!;
-    const item = await getItem(itemId);
-    if (!item || item.userId !== ctx.from.id) {
-      return ctx.answerCallbackQuery({ text: 'Запись не найдена', show_alert: true });
-    }
-    const kb = new InlineKeyboard()
-      .text('✅ Удалить', `delok:fix:${itemId}`)
-      .text('❌ Отмена', `delno:fix:${itemId}`);
-    await ctx.editMessageReplyMarkup({ reply_markup: kb });
-    await ctx.answerCallbackQuery();
-  });
-
+  // Удаление — подтверждение НА МЕСТЕ (правим клавиатуру того же сообщения). delc: — из карточки записи.
   bot.callbackQuery(/^delc:(.+)$/, async (ctx) => {
     const itemId = ctx.match[1]!;
     const item = await getItem(itemId);
@@ -407,11 +228,9 @@ export function registerCallbacks(bot: Bot): void {
   });
 
   // Подтверждено: удаляем item из БД + пересланный пост из чата (если бот ещё может, ~48ч) +
-  // висящий переход «↑ Источник» к этому item. Карточку (kind=card) убираем целиком,
-  // сообщение-приём (kind=fix) — оставляем меткой «Удалено» (без мёртвых ссылок).
-  bot.callbackQuery(/^delok:(fix|card):(.+)$/, async (ctx) => {
-    const kind = ctx.match[1]!;
-    const itemId = ctx.match[2]!;
+  // висящий переход «↑ Источник» к этому item. Карточку убираем целиком (без мёртвого тумбстоуна).
+  bot.callbackQuery(/^delok:card:(.+)$/, async (ctx) => {
+    const itemId = ctx.match[1]!;
     const item = await getItem(itemId); // нужен tgMessageId до удаления
     const ok = await deleteItem(itemId, ctx.from.id);
     const chatId = ctx.chat?.id;
@@ -425,93 +244,22 @@ export function registerCallbacks(bot: Bot): void {
     }
     if (!ok) {
       await ctx.editMessageText('Запись уже удалена.');
-    } else if (kind === 'card') {
+    } else {
       await ctx.deleteMessage().catch(() => {}); // карточку убираем — без мёртвого тумбстоуна
       // Карточка удалена целиком — освобождаем слот (по msgId), чтобы следующий тап создал свежую.
       const msgId = ctx.callbackQuery.message?.message_id;
       if (chatId != null && lastCard.get(chatId) === msgId) lastCard.delete(chatId);
-    } else {
-      await ctx.editMessageText('🗑 Удалено.');
     }
     await ctx.answerCallbackQuery();
   });
 
-  // Отмена — восстанавливаем исходные кнопки сообщения (fix-приём или карточка).
-  bot.callbackQuery(/^delno:(fix|card):(.+)$/, async (ctx) => {
-    const kind = ctx.match[1]!;
-    const itemId = ctx.match[2]!;
-    let kb: InlineKeyboard;
-    if (kind === 'card') {
-      const item = await getItem(itemId);
-      // Запись внезапно пропала — оставляем только закрытие, без мёртвых кнопок.
-      kb = item ? cardKeyboard(item) : new InlineKeyboard().text('✕', 'close');
-    } else {
-      kb = fixKeyboard(itemId);
-    }
+  // Отмена удаления — восстанавливаем кнопки карточки.
+  bot.callbackQuery(/^delno:card:(.+)$/, async (ctx) => {
+    const itemId = ctx.match[1]!;
+    const item = await getItem(itemId);
+    // Запись внезапно пропала — оставляем только закрытие, без мёртвых кнопок.
+    const kb = item ? cardKeyboard(item) : new InlineKeyboard().text('✕', 'close');
     await ctx.editMessageReplyMarkup({ reply_markup: kb });
     await ctx.answerCallbackQuery();
-  });
-
-  // Новая категория: просим имя через force_reply, ввод привязываем к id сообщения-приглашения.
-  bot.callbackQuery(/^newcat:(.+)$/, async (ctx) => {
-    const itemId = ctx.match[1]!;
-    if (!(await getItem(itemId))) {
-      return ctx.answerCallbackQuery({ text: 'Запись не найдена', show_alert: true });
-    }
-    const prompt = await ctx.reply('Как назвать категорию? Ответь на это сообщение названием.', {
-      reply_markup: { force_reply: true },
-    });
-    await setEditPending(prompt.chat.id, prompt.message_id, itemId);
-    // Пока ждём имя — у исходного сообщения оставляем только выход назад к списку категорий
-    // (на самом force_reply кнопок быть не может — это и создавало дедлок). fix: пересоберёт список.
-    await ctx
-      .editMessageReplyMarkup({ reply_markup: new InlineKeyboard().text('⬅ Назад', `fix:${itemId}`) })
-      .catch(() => {});
-    await ctx.answerCallbackQuery();
-  });
-
-  // Перехват ответа с названием новой категории. Регистрируется ДО ingest (см. bot/index.ts),
-  // поэтому ответ на приглашение не уйдёт в сохранение как обычный контент.
-  bot.on('message:text', async (ctx, next) => {
-    const replyTo = ctx.message.reply_to_message;
-    if (!replyTo) return next();
-
-    const itemId = await getEditPending(ctx.chat.id, replyTo.message_id);
-    if (!itemId) return next(); // обычный текст → дальше в ingest
-
-    const name = ctx.message.text.trim().slice(0, 40);
-    if (!name) {
-      await delEditPending(ctx.chat.id, replyTo.message_id);
-      await ctx.reply('Пустое название — отменил. Нажми «🔀 Не та категория» ещё раз.');
-      return;
-    }
-
-    const item = await getItem(itemId);
-    if (!item || item.userId !== ctx.from.id) {
-      await delEditPending(ctx.chat.id, replyTo.message_id);
-      await ctx.reply('Запись не найдена.');
-      return;
-    }
-
-    const emb = (item.embedding as number[] | null) ?? null;
-    const prevClusterId = item.clusterId;
-    const existing = await findClusterByNameCI(ctx.from.id, name);
-    if (existing) {
-      // Категория уже есть (в любом регистре) — переносим, не плодим дубль. Ручная правка → lock.
-      await assignItemCluster(itemId, existing.id, true);
-      await recomputeClusterStats(existing.id);
-      await ctx.reply(`✅ Перенёс в «${existing.name}».`);
-    } else {
-      // Новый кластер: создаём с эмбеддингом записи как стартовым центроидом (единственный член).
-      // При гонке createCluster вернёт существующий одноимённый — пересчёт stats обязателен.
-      const created = await createCluster(ctx.from.id, name, emb);
-      await assignItemCluster(itemId, created.id, true);
-      await recomputeClusterStats(created.id);
-      await ctx.reply(`✅ Создал категорию «${name}» и положил туда.`);
-    }
-    // Запись ушла из прежнего кластера — пересчитываем его статистику от истины.
-    if (prevClusterId) await recomputeClusterStats(prevClusterId);
-
-    await delEditPending(ctx.chat.id, replyTo.message_id);
   });
 }

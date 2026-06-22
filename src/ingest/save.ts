@@ -1,19 +1,17 @@
 import type { Api } from 'grammy';
 import type { Message } from 'grammy/types';
 import { detect, hasMeaningfulCaption, mediaFileRef } from './detect.js';
-import { classify, classifyWithReminder } from './classify.js';
+import { detectReminder } from './classify.js';
 import { fetchLinkMeta, hostnameOf } from '../content/og.js';
 import { insertItem, findItemByTgMessageId, findDuplicateItem, groupsAlreadyPosted } from '../db/items.js';
-import { getCluster } from '../db/clusters.js';
 import { getReminderSettings, setReminder } from '../db/reminders.js';
 import { enqueueProcess, type AckRef } from '../queue/index.js';
-import { IMAGE_SHELF } from '../cluster/assign.js';
 import type { Item, NewItem } from '../db/schema.js';
 
 /**
- * Сохраняет одно логическое сообщение как item: дешёвый сигнал по типу → запись → классификация →
- * постановка тяжёлого (L2) в фон. Возвращает item и категорию (для edit сообщения).
- * Без ctx — принимает Api напрямую, чтобы вызываться и из хендлера, и из фонового флаша альбома.
+ * Сохраняет одно логическое сообщение как item: дешёвый сигнал по типу → запись → постановка
+ * тяжёлого (L2) в фон. Категорий нет (организация по источнику, поиск по вектору) — на живом приёме
+ * лишь детектим «напомни …». Без ctx — принимает Api напрямую (хендлер и фоновый флаш альбома).
  */
 export async function saveItem(
   api: Api,
@@ -21,7 +19,7 @@ export async function saveItem(
   msg: Message,
   ack?: AckRef,
   opts?: { detectReminder?: boolean },
-): Promise<{ item: Item; category: string; duplicate: boolean }> {
+): Promise<{ item: Item; duplicate: boolean }> {
   const det = detect(msg);
 
   let title: string | undefined;
@@ -58,8 +56,7 @@ export async function saveItem(
   // Приоритет ключа — как в балк-дедупе: url → file_unique_id → нормализованный текст.
   const dup = await findDuplicateItem(userId, { url: det.url, fileUid: tgFileUniqueId, text: det.text });
   if (dup) {
-    const category = dup.clusterId ? ((await getCluster(dup.clusterId))?.name ?? '') : '';
-    return { item: dup, category, duplicate: true };
+    return { item: dup, duplicate: true };
   }
 
   if (det.type === 'link' && det.url) {
@@ -86,33 +83,33 @@ export async function saveItem(
   };
   const item = await insertItem(values);
 
-  // Картинки — единая полка (§3.4), без LLM-классификации. Остальное — по дешёвому сигналу.
-  // detectReminder (живой одиночный приём): тем же LLM-вызовом ловим «напомни …» и молча ставим
-  // напоминание — без доп. вызова и без регекса. Картинки минуют classify → их покрывает кнопка.
-  let category: string;
-  if (det.type === 'image') {
-    category = IMAGE_SHELF;
-  } else if (opts?.detectReminder) {
+  // detectReminder для голоса/видео: их текст рождается только в L2 (STT) — «напомни …» ловим там по
+  // транскрипту (на L1 сигнал пуст). Только живой одиночный приём (флаг), не импорт/burst/альбом.
+  const detectVoiceReminder = Boolean(opts?.detectReminder) && (det.type === 'voice' || det.type === 'video');
+  // Живой одиночный приём text/link/doc: тем же дешёвым вызовом ловим «напомни …» и молча ставим
+  // напоминание (без регекса). Возврат всплывёт на финале L2 (worker.ts). Картинки/голос минуют это.
+  if (opts?.detectReminder && !detectVoiceReminder && det.type !== 'image') {
     const { tz } = await getReminderSettings(userId);
-    const res = await classifyWithReminder(item, userId, { tz });
-    category = res.category;
-    // Тихо: L1-ack не трогаем (ещё идёт обработка), возврат всплывёт на финале L2 (worker.ts).
-    if (res.reminder) await setReminder(item.id, userId, res.reminder.whenAt);
-  } else {
-    category = await classify(item, userId);
+    const { reminder } = await detectReminder(item, userId, { tz });
+    if (reminder) await setReminder(item.id, userId, reminder.whenAt);
   }
-  // ack передаём только для одиночных пересылок — тогда L2 сможет отредактировать «Положил…» при сбое.
+  // ack передаём только для одиночных пересылок — тогда L2 сможет отредактировать приём при сбое.
   // sttSkipReason едет в payload (не вычисляется в L2): там по отсутствию tgFileId большой файл
   // неотличим от gif — gif получил бы ложное предупреждение «сохранил без расшифровки».
-  await enqueueProcess(item.id, category, ack, false, sttSkipReason);
-  return { item, category, duplicate: false };
+  await enqueueProcess(item.id, ack, false, sttSkipReason, detectVoiceReminder);
+  return { item, duplicate: false };
 }
 
-/** Текст-подтверждение для уже сохранённого поста (дубль): заголовок + папка, если известны. */
-export function duplicateText(item: Item, category: string): string {
+/** Текст-подтверждение для уже сохранённого поста (дубль): заголовок, если известен. */
+export function duplicateText(item: Item): string {
   const name = item.title ? ` — «${truncate(item.title, 80)}»` : '';
-  const folder = category ? ` Лежит в «${category}».` : '';
-  return `Это уже в Бумеранге${name}.${folder} Повторно не добавил.`;
+  return `Это уже в Бумеранге${name}. Повторно не добавил.`;
+}
+
+/** Финальный статус приёма: «✅ Принял — «заголовок»» (если есть title) или просто «✅ Принял». */
+export function acceptedText(item: Item): string {
+  const title = item.title?.trim();
+  return title ? `✅ Принял — «${truncate(title, 80)}»` : '✅ Принял';
 }
 
 /**
@@ -131,12 +128,11 @@ export async function flushAlbumMessages(
     const existing = await findItemByTgMessageId(captionMsg.from.id, captionMsg.message_id);
     let text: string;
     if (existing) {
-      // Категория из L1 при ретрае недоступна (не персистится) — нейтральное подтверждение.
       text = `✅ Уже сохранил${existing.title ? ` — ${truncate(existing.title, 80)}` : ''}`;
     } else {
-      const { item, category, duplicate } = await saveItem(api, captionMsg.from.id, captionMsg);
+      const { item, duplicate } = await saveItem(api, captionMsg.from.id, captionMsg);
       // Тот же контент другим message_id (мимо findItemByTgMessageId) → дубль: не задвоили, сообщаем.
-      text = duplicate ? duplicateText(item, category) : `✅ Положил в ${label(item.title, category)}`;
+      text = duplicate ? duplicateText(item) : acceptedText(item);
     }
     // Правка ack — best-effort: её падение (протухшее/изменённое сообщение) не должно ронять флаш
     // и гонять ретрай (он бы задвоил уже сохранённое). Без кнопок: управление записью — в карточке
@@ -165,10 +161,6 @@ export async function flushAlbumMessages(
     n += 1;
   }
   await api.editMessageText(ackChatId, ackMessageId, `✅ Принял ${n} медиа (без подписи)`).catch(() => {});
-}
-
-export function label(title: string | null, category: string): string {
-  return title ? `«${category}» — ${truncate(title, 80)}` : `«${category}»`;
 }
 
 function truncate(s: string, n: number): string {

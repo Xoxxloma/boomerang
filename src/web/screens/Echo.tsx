@@ -4,23 +4,8 @@ import type { EchoCard, ItemDTO } from '../lib/types.js';
 import { EmptyState, BeamLoader } from '../components/States.js';
 import { IconBoomerang } from '../components/Icons.js';
 import { longDate } from '../lib/format.js';
-import { hapticImpact } from '../lib/telegram.js';
 
-function pluralMaterials(n: number): string {
-  const mod10 = n % 10;
-  const mod100 = n % 100;
-  if (mod10 === 1 && mod100 !== 11) return 'материал';
-  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 10 || mod100 >= 20)) return 'материала';
-  return 'материалов';
-}
-
-export function EchoScreen({
-  onOpenItem,
-  onSynth,
-}: {
-  onOpenItem: (it: ItemDTO) => void;
-  onSynth: (clusterId: string, name: string) => void;
-}) {
+export function EchoScreen({ onOpenItem }: { onOpenItem: (it: ItemDTO) => void }) {
   const [cards, setCards] = useState<EchoCard[] | null>(null);
   const [status, setStatus] = useState<'loading' | 'done' | 'error'>('loading');
 
@@ -58,13 +43,7 @@ export function EchoScreen({
 
       {status === 'done' &&
         cards?.map((card, i) => (
-          <EchoCardView
-            key={`${card.kind}-${i}`}
-            card={card}
-            index={i}
-            onOpenItem={onOpenItem}
-            onSynth={onSynth}
-          />
+          <EchoCardView key={`${card.kind}-${i}`} card={card} index={i} onOpenItem={onOpenItem} />
         ))}
     </div>
   );
@@ -74,36 +53,12 @@ function EchoCardView({
   card,
   index,
   onOpenItem,
-  onSynth,
 }: {
   card: EchoCard;
   index: number;
   onOpenItem: (it: ItemDTO) => void;
-  onSynth: (clusterId: string, name: string) => void;
 }) {
   const style = { animationDelay: `${Math.min(index, 8) * 55}ms` };
-
-  if (card.kind === 'maturity' && card.clusterId && card.clusterName) {
-    const n = card.count ?? 0;
-    return (
-      <div className="echo-card rise" data-kind="maturity" style={style}>
-        <div className="echo-kind">созрело</div>
-        <div className="echo-headline">Тема «{card.clusterName}» готова к своду</div>
-        <div className="echo-sub">
-          {n} {pluralMaterials(n)} накопилось — собрать в один связный ответ?
-        </div>
-        <button
-          className="return-btn"
-          onClick={() => {
-            hapticImpact('medium');
-            onSynth(card.clusterId!, card.clusterName!);
-          }}
-        >
-          <IconBoomerang /> Свести
-        </button>
-      </div>
-    );
-  }
 
   if (card.kind === 'on_this_day' && card.item) {
     const it = card.item;

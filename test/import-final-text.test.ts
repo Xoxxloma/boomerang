@@ -11,7 +11,6 @@ function res(p: Partial<BatchResult>): BatchResult {
     inBatchDupes: [],
     existingDupeCount: 0,
     inBatchDupeCount: 0,
-    totalClusters: 0,
     ...p,
   };
 }
@@ -25,7 +24,7 @@ describe('finalText', () => {
     const t = finalText(
       res({ saved: 2, skipped: 1, existingDupeCount: 1, existingDupes: ['Как оформить ВНЖ'] }),
     );
-    expect(t).toContain('✅ Разобрал 2: 2 по темам.');
+    expect(t).toContain('✅ Разобрал 2.');
     expect(t).toContain('Эти посты уже были в Бумеранге, не добавил повторно:');
     expect(t).toContain('• Как оформить ВНЖ');
     expect(t).not.toContain('Убрал повторы внутри заливки');

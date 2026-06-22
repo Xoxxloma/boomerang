@@ -1,22 +1,10 @@
 import type { Draft } from './draft.js';
-import type { Item, NewItem } from '../db/schema.js';
+import type { NewItem } from '../db/schema.js';
 import { insertItems, existingDedupKeys, textKey, groupsAlreadyPosted } from '../db/items.js';
-import {
-  listClusters,
-  createCluster,
-  recomputeClusterStats,
-  assignItemsToCluster,
-  findClusterByNameCI,
-} from '../db/clusters.js';
 import { embedBatch } from '../ai/embeddings.js';
-import { chatJson } from '../ai/llm.js';
-import { breakerState } from '../ai/usage.js';
 import { QuotaExceededError, BudgetExhaustedError } from '../ai/errors.js';
-import { CLUSTER_NAME_SYSTEM, clusterNamePrompt } from '../ai/prompts.js';
 import { buildIndexText, type Indexable } from '../ingest/extract.js';
-import { IMAGE_SHELF } from '../cluster/assign.js';
 import { enqueueProcess } from '../queue/index.js';
-import { clusterEmbeddings, type SeedCluster, type ClusterPoint } from '../cluster/batch.js';
 
 /** Страховка от мегаархивов: больше не обрабатываем за один заход (лог при урезании). */
 const MAX_ITEMS = 20000;
@@ -26,15 +14,13 @@ const EMBED_BATCH = 128;
 const MAX_EMBED_CHARS = 8000;
 /** Минимальная длина текста, чтобы запись не считалась мусором (если нет url/файла). */
 const MIN_TEXT_LEN = 10;
-/** Параллельность LLM-нейминга кластеров. */
-const NAME_CONCURRENCY = 5;
 
 /** Предел длины сэмпла имён дублей в результате (для UI-списка; счётчики точные). */
 export const DUPE_SAMPLE_CAP = 20;
 
 export interface BatchResult {
   saved: number;
-  /** Сколько из saved — картинки (на полке «Изображения», не в тематических темах). */
+  /** Сколько из saved — картинки (OCR/vision досчитаются фоном). */
   images: number;
   skipped: number;
   /** Имена постов, уже бывших в Бумеранге (сверка с БД), не добавлены повторно. Сэмпл ≤ DUPE_SAMPLE_CAP. */
@@ -45,7 +31,6 @@ export interface BatchResult {
   existingDupeCount: number;
   /** Точное число повторов внутри заливки. */
   inBatchDupeCount: number;
-  totalClusters: number;
   /**
    * Заливка остановлена на дневном лимите расхода: уже векторизованное вставлено, остаток пула —
    * НЕ обработан и оставлен в буфере (дольётся после сброса лимита). Сигнал для flushBurst не закрывать
@@ -105,10 +90,6 @@ export function isNoise(d: Draft): boolean {
   return false;
 }
 
-function sampleTextOf(it: Item): string {
-  return (it.title ?? it.rawText ?? it.url ?? '').slice(0, 120);
-}
-
 /** Draft в форме Indexable для buildIndexText (полей description/ocr/transcript у черновика нет). */
 function draftIndexable(d: Draft): Indexable {
   return {
@@ -123,43 +104,10 @@ function draftIndexable(d: Draft): Indexable {
   };
 }
 
-/** Имя кластера по образцам (1 LLM-вызов). Фолбэк — «Разное». В degraded/paused LLM не зовём. */
-async function nameCluster(samples: string[], userId: number): Promise<string> {
-  if (samples.length === 0) return 'Разное';
-  // Дорогая генерация: в degraded/paused пропускаем LLM, новый кластер получает нейтральное имя.
-  if (breakerState() !== 'normal') return 'Разное';
-  try {
-    const { category } = await chatJson<{ category: string }>(clusterNamePrompt(samples), {
-      system: CLUSTER_NAME_SYSTEM,
-      temperature: 0,
-      userId,
-      maxTokens: 64,
-    });
-    const cleaned = category?.trim();
-    return cleaned && cleaned.length <= 40 ? cleaned : 'Разное';
-  } catch (err) {
-    console.error('nameCluster error:', err);
-    return 'Разное';
-  }
-}
-
-async function mapLimit<T, R>(items: T[], limit: number, fn: (it: T) => Promise<R>): Promise<R[]> {
-  const out: R[] = new Array(items.length);
-  let i = 0;
-  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
-    while (i < items.length) {
-      const cur = i++;
-      out[cur] = await fn(items[cur]!);
-    }
-  });
-  await Promise.all(workers);
-  return out;
-}
-
 /**
  * Батч-заливка избранного (всплеск пересылок или JSON-экспорт): дедуп → шумоотсев → bulk insert →
- * батч-эмбеддинги → батч-кластеризация → нейминг новых кластеров. На заливке только дешёвый сигнал
- * (OG/OCR/чтение файлов — лениво/по запросу). Поиск/синтез по залитому работают сразу.
+ * батч-эмбеддинги. Категорий/кластеров нет (организация по источнику, поиск по вектору). На заливке
+ * только дешёвый сигнал (OG/OCR/чтение файлов — лениво/по запросу). Поиск/синтез по залитому сразу.
  */
 export async function batchIngest(userId: number, drafts: Draft[], onProgress?: ProgressFn): Promise<BatchResult> {
   const total = drafts.length;
@@ -210,8 +158,7 @@ export async function batchIngest(userId: number, drafts: Draft[], onProgress?: 
 
   const skipped = total - pool.length;
   if (pool.length === 0) {
-    const totalClusters = (await listClusters(userId)).length;
-    return { saved: 0, images: 0, skipped, totalClusters, ...dupeInfo };
+    return { saved: 0, images: 0, skipped, ...dupeInfo };
   }
 
   // Эмбеддинги считаем ДО вставки: это самый дорогой и сетевой шаг (OpenAI через VPN нестабилен).
@@ -251,8 +198,7 @@ export async function batchIngest(userId: number, drafts: Draft[], onProgress?: 
   if (processedCount < pool.length) pool = pool.slice(0, processedCount);
   if (pool.length === 0) {
     // Лимит исчерпан на первом же чанке — ничего не векторизовали, вставлять нечего.
-    const totalClusters = (await listClusters(userId)).length;
-    return { saved: 0, images: 0, skipped, totalClusters, stoppedForBudget, ...dupeInfo };
+    return { saved: 0, images: 0, skipped, stoppedForBudget, ...dupeInfo };
   }
 
   // Вставка с уже готовым эмбеддингом одним полем (indexedAt — раз вектор есть, L2 для текста не нужен).
@@ -273,76 +219,12 @@ export async function batchIngest(userId: number, drafts: Draft[], onProgress?: 
   }));
   const inserted = await insertItems(values);
 
-  // Карта itemId→эмбеддинг (по индексу: insertItems сохраняет порядок) — для кластеризации.
-  const embByItem = new Map<string, number[]>();
-  inserted.forEach((it, idx) => {
-    const e = embByIndex[idx];
-    if (e) embByItem.set(it.id, e);
-  });
-
-  // Картинки — на единую полку «Изображения» (§3.4), без тематического дробления.
+  // Картинки с файлом — фоновый OCR/vision (§3.4): иначе залитые пачкой картинки не искались бы по
+  // тексту (в отличие от одиночной пересылки). processItem досчитает OCR/описание и эмбеддинг.
   const imageItems = inserted.filter((it) => it.type === 'image');
-  await assignImages(userId, imageItems);
-
-  // Остальное с эмбеддингом — батч-кластеризация по темам.
-  const points: ClusterPoint[] = inserted
-    .filter((it) => it.type !== 'image' && embByItem.has(it.id))
-    .map((it) => ({ itemId: it.id, emb: embByItem.get(it.id)!, sampleText: sampleTextOf(it) }));
-  await clusterThematic(userId, points);
-
-  // Картинки с файлом — фоновый OCR (§3.4): иначе залитые пачкой картинки не искались бы по тексту
-  // (в отличие от одиночной пересылки). Ставим В КОНЦЕ — clusterId уже проставлен assignImages,
-  // поэтому processItem только до-OCR-ит и обновит эмбеддинг, без повторного отнесения к полке.
   for (const it of imageItems) {
-    if (it.tgFileId) await enqueueProcess(it.id, IMAGE_SHELF);
+    if (it.tgFileId) await enqueueProcess(it.id);
   }
 
-  const totalClusters = (await listClusters(userId)).length;
-  return { saved: inserted.length, images: imageItems.length, skipped, totalClusters, stoppedForBudget, ...dupeInfo };
-}
-
-/** Все картинки пачки → полка «Изображения» (find-or-create), один UPDATE + пересчёт статистики. */
-async function assignImages(userId: number, imageItems: Item[]): Promise<void> {
-  if (imageItems.length === 0) return;
-  const ids = imageItems.map((it) => it.id);
-  const shelf = (await listClusters(userId)).find((c) => c.name === IMAGE_SHELF);
-  const clusterId = shelf ? shelf.id : (await createCluster(userId, IMAGE_SHELF, null)).id;
-  await assignItemsToCluster(ids, clusterId);
-  // Центроид/size — от истины: среднее по фактическим эмбеддингам полки. На заливке картинки обычно
-  // без подписи (эмбеддинг появится позже из OCR), тогда avg → NULL: null-центроид на полке безвреден
-  // (поиск — по эмбеддингам item, в тематическую кластеризацию полка не входит).
-  await recomputeClusterStats(clusterId);
-}
-
-/** Батч-кластеризация тематических записей с подгрузкой существующих кластеров как стартовых центроидов. */
-async function clusterThematic(userId: number, points: ClusterPoint[]): Promise<void> {
-  if (points.length === 0) return;
-
-  const seeds: SeedCluster[] = (await listClusters(userId))
-    .filter((c) => c.name !== IMAGE_SHELF && c.centroid)
-    .map((c) => ({ id: c.id, centroid: c.centroid as number[], size: c.size }));
-
-  const plan = clusterEmbeddings(seeds, points);
-
-  // Дозаливаем в существующие кластеры; центроид/size — пересчётом от истины (один на кластер).
-  for (const a of plan.toExisting) {
-    await assignItemsToCluster(a.itemIds, a.clusterId);
-    await recomputeClusterStats(a.clusterId);
-  }
-
-  // Новые группы: нейминг (параллельно), затем создание/мерж по имени.
-  const names = await mapLimit(plan.newGroups, NAME_CONCURRENCY, (g) => nameCluster(g.sampleTexts, userId));
-  for (let i = 0; i < plan.newGroups.length; i++) {
-    const g = plan.newGroups[i]!;
-    const name = names[i]!;
-    const byName = await findClusterByNameCI(userId, name);
-    if (byName) {
-      await assignItemsToCluster(g.itemIds, byName.id);
-      await recomputeClusterStats(byName.id);
-    } else {
-      const created = await createCluster(userId, name, g.centroid);
-      await assignItemsToCluster(g.itemIds, created.id);
-      await recomputeClusterStats(created.id);
-    }
-  }
+  return { saved: inserted.length, images: imageItems.length, skipped, stoppedForBudget, ...dupeInfo };
 }

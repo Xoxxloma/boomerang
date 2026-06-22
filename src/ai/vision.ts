@@ -5,12 +5,11 @@ import { tuning } from '../config/tuning.js';
 import { enforce, recordVisionUsage } from './usage.js';
 import { alertIfUsageMissing } from '../bot/alerts.js';
 import { VISION_SYSTEM, visionPrompt } from './prompts.js';
-import { cleanCategory } from '../ingest/classify.js';
 
 /**
- * Vision-аннотация картинок (L2): один дешёвый вызов возвращает описание + категорию + заголовок.
+ * Vision-аннотация картинок (L2): один дешёвый вызов возвращает описание + заголовок.
  * Описание — «сырьё» в индекс (items.description, юзеру не показывается — как OCR/транскрипт),
- * категория — сид тематического кластера, заголовок — в выдачу. Vision НЕ заменяет OCR: при
+ * заголовок — в выдачу. Vision НЕ заменяет OCR: при
  * detail:'low' картинка ужимается до 512px и плотный текст скринов не читается — дословные строки
  * (промокоды/адреса) даёт tesseract. Модель — константа: при смене сверить visionPrice* в tuning.ts.
  */
@@ -36,7 +35,6 @@ export interface VisionContext {
 
 export interface ImageAnnotation {
   description: string;
-  category: string;
   title: string | null;
 }
 
@@ -78,7 +76,7 @@ export async function describeImage(
   await alertIfUsageMissing('vision', promptTokens, completionTokens);
 
   const text = res.choices[0]?.message?.content?.trim() ?? '';
-  let parsed: { description?: string; category?: string; title?: string };
+  let parsed: { description?: string; title?: string };
   try {
     parsed = JSON.parse(text) as typeof parsed;
   } catch {
@@ -87,7 +85,6 @@ export async function describeImage(
 
   return {
     description: (parsed.description ?? '').trim().slice(0, 500),
-    category: cleanCategory(parsed.category),
     title: parsed.title?.trim().slice(0, 80) || null,
   };
 }

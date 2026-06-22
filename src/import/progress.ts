@@ -45,9 +45,8 @@ export function finalText(res: BatchResult): string {
 
   const blocks: string[] = [];
   if (res.saved > 0) {
-    const themed = res.saved - res.images;
-    const imgPart = res.images > 0 ? ` + ${res.images} картинок на полке «Изображения»` : '';
-    blocks.push(`✅ Разобрал ${res.saved}: ${themed} по темам${imgPart}.`);
+    const imgPart = res.images > 0 ? ` (из них ${res.images} картинок)` : '';
+    blocks.push(`✅ Разобрал ${res.saved}${imgPart}.`);
   } else {
     blocks.push('Ничего нового не добавил.');
   }

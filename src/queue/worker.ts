@@ -5,7 +5,7 @@ import { processItem, type ProcessResult } from './jobs/process.js';
 import { flushAlbum, notifyAlbumFlushFailed } from '../ingest/album.js';
 import { flushBurst, notifyBurstFlushFailed, reapEmptyImport } from '../import/burst.js';
 import { getItem, itemDisplayName } from '../db/items.js';
-import { label } from '../ingest/save.js';
+import { acceptedText } from '../ingest/save.js';
 import { getBotApi } from '../bot/api.js';
 import { notifyAdmins } from '../bot/alerts.js';
 import { QuotaExceededError, BudgetExhaustedError } from '../ai/errors.js';
@@ -36,15 +36,17 @@ export async function startWorkers(): Promise<void> {
 
   await boss.work<ProcessJob>(Q_PROCESS, { batchSize: 1 }, async (jobs) => {
     for (const job of jobs) {
-      let res: ProcessResult = { clusterName: null, docUnreadable: false };
+      let res: ProcessResult = { docUnreadable: false };
       try {
-        res = await processItem(job.data.itemId, job.data.seedCategory);
+        res = await processItem(job.data.itemId, {
+          detectReminder: job.data.detectReminder,
+        });
       } catch (err) {
         // Бюджет-гард: персональный потолок / глобальный paused. Ретраить бессмысленно (лимит за
         // ~25с не уйдёт), DLQ дал бы обезличенный «сбой». Правим сообщение точным текстом и НЕ
         // пробрасываем: item остаётся indexedAt=null → переиндексируется кнопкой/reindex после сброса.
         if (err instanceof QuotaExceededError || err instanceof BudgetExhaustedError) {
-          const { itemId, seedCategory, ack } = job.data;
+          const { itemId, ack } = job.data;
           if (ack) {
             const item = await getItem(itemId);
             if (item) {
@@ -52,9 +54,9 @@ export async function startWorkers(): Promise<void> {
               const kb = new InlineKeyboard().text('🔄 Повторить', `reidx:${itemId}`);
               const text =
                 err instanceof QuotaExceededError
-                  ? `⚠️ «${name}» — сохранил в «${seedCategory}», но твой дневной лимит исчерпан. ` +
+                  ? `⚠️ «${name}» — сохранил, но твой дневной лимит исчерпан. ` +
                     `Проиндексирую после ${formatResetUtc(err.resetsAt)}.`
-                  : `⚠️ «${name}» — сохранил в «${seedCategory}», но сервис под повышенной нагрузкой. ` +
+                  : `⚠️ «${name}» — сохранил, но сервис под повышенной нагрузкой. ` +
                     `Проиндексирую чуть позже.`;
               await getBotApi()
                 .editMessageText(ack.chatId, ack.messageId, text, { reply_markup: kb })
@@ -81,7 +83,7 @@ export async function startWorkers(): Promise<void> {
           : '');
 
       // Успех ПОВТОРНОЙ обработки (по кнопке) → честно обновляем сообщение поста: теперь найдётся.
-      const { ack, notifyOnSuccess, itemId, seedCategory } = job.data;
+      const { ack, notifyOnSuccess, itemId } = job.data;
       if (notifyOnSuccess && ack) {
         const item = await getItem(itemId);
         const name = item ? itemDisplayName(item) : 'запись';
@@ -91,20 +93,18 @@ export async function startWorkers(): Promise<void> {
         continue;
       }
 
-      // Шаг 3: финализируем «предварительно «X»» → реальная полка. Только одиночные пересылки (есть ack),
-      // не вручную перенесённые (их сообщение уже финализировано fix-флоу — «Перенёс в…», не затираем).
-      // Картинки тоже финализируются здесь: vision (L2) даёт реальную тему; без темы clusterName null →
-      // фоллбэк на seedCategory («Изображения»), чтобы сообщение не зависло на «предварительно».
+      // Финализируем приём: «Принял, обрабатываю…» → «✅ Принял — «заголовок»». Только одиночные
+      // пересылки (есть ack). Заголовок к этому моменту уже добыт L2 (vision/STT) или известен с L1
+      // (OG-title ссылки, имя файла). Картинки/голос получают здесь свой осмысленный title.
       if (ack) {
         const item = await getItem(itemId);
-        if (item && !item.clusterLocked) {
-          const finalName = res.clusterName ?? seedCategory;
+        if (item) {
           // Если на item стоит напоминание — дописываем строку возврата (иначе затёрли бы L1-постановку).
           const remind = await remindLine(item);
-          // Без кнопок: управление записью (напомнить/перенести/удалить) живёт в карточке события
-          // (cardKeyboard), а не на сообщении-приёме. Финал — просто честный статус.
+          // Без кнопок: управление записью (напомнить/удалить) живёт в карточке события (cardKeyboard),
+          // а не на сообщении-приёме. Финал — просто честный статус.
           await getBotApi()
-            .editMessageText(ack.chatId, ack.messageId, `✅ Положил в ${label(item.title, finalName)}${warn}${remind}`)
+            .editMessageText(ack.chatId, ack.messageId, `${acceptedText(item)}${warn}${remind}`)
             .catch(() => {});
         }
       }
@@ -116,7 +116,7 @@ export async function startWorkers(): Promise<void> {
   // уведомлений: ack есть только у одиночных пересылок (у альбома/заливки общий ack — пропускаем).
   await boss.work<ProcessJob>(Q_PROCESS_DLQ, { batchSize: 1 }, async (jobs) => {
     for (const job of jobs) {
-      const { itemId, seedCategory, ack } = job.data;
+      const { itemId, ack } = job.data;
       if (!ack) continue;
       const item = await getItem(itemId);
       if (!item) continue;
@@ -125,8 +125,7 @@ export async function startWorkers(): Promise<void> {
         .editMessageText(
           ack.chatId,
           ack.messageId,
-          `⚠️ «${itemDisplayName(item)}» — сохранил в «${seedCategory}», но не смог проиндексировать. ` +
-            `В поиске пока не найду.`,
+          `⚠️ «${itemDisplayName(item)}» — сохранил, но не смог проиндексировать. В поиске пока не найду.`,
           { reply_markup: kb },
         )
         .catch(() => {});

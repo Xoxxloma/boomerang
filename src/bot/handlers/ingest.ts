@@ -7,8 +7,8 @@ import { sourceKeyboard } from './callbacks.js';
 
 /**
  * Приём контента — Level 1 (синхронно, §5):
- * 1) мгновенное «Принял»; 2) дешёвый сигнал; 3) сохранение item; 4) категория; 5) edit с
- * авто-категорией; 6) тяжёлое — в фон (L2). Альбомы (media group) склеиваются в один пост.
+ * 1) мгновенное «Принял»; 2) сохранение item; 3) тяжёлое — в фон (L2), который добывает заголовок
+ * и финализирует сообщение «✅ Принял — «заголовок»». Альбомы (media group) склеиваются в один пост.
  */
 export function registerIngest(bot: Bot): void {
   bot.on('message', async (ctx) => {
@@ -39,33 +39,29 @@ export function registerIngest(bot: Bot): void {
       // Координаты ack-сообщения → L2 сможет отредактировать его при сбое индексации (1.4).
       const ackRef = { chatId: ack.chat.id, messageId: ack.message_id };
       // detectReminder только здесь — живой одиночный приём. Альбом/burst/импорт зовут saveItem без флага.
-      const { item, category, duplicate } = await saveItem(ctx.api, ctx.from.id, ctx.message, ackRef, {
+      const { item, duplicate } = await saveItem(ctx.api, ctx.from.id, ctx.message, ackRef, {
         detectReminder: true,
       });
       if (duplicate) {
         // Тот же пост уже сохранён → не задвоили; даём перейти к оригиналу (§ тезис: дубли не копим).
-        await ctx.api.editMessageText(ack.chat.id, ack.message_id, duplicateText(item, category), {
+        await ctx.api.editMessageText(ack.chat.id, ack.message_id, duplicateText(item), {
           reply_markup: sourceKeyboard(item),
         });
       } else {
-        // L1-метка предварительна: реальную полку определит L2 (assignCluster по эмбеддингу) и
-        // финализирует это сообщение шагом «Положил в …» с кнопками (см. queue/worker.ts).
-        // БЕЗ клавиатуры: «Не та тема»/«Удалить» появятся только на финале — пока тема не определена,
-        // править/лочить категорию нечего (заодно нет гонки lock-до-L2).
-        // Голос/видео с файлом под транскрипцию — честный статус «расшифровываю» (L2 дольше обычного).
+        // L2 добудет заголовок (vision/STT/OG) и финализирует это сообщение «✅ Принял — «заголовок»»
+        // (см. queue/worker.ts). Промежуточный статус — честное «обрабатываю». Голос/видео под
+        // транскрипцию идут дольше — отдельная формулировка.
         const transcribing = (item.type === 'voice' || item.type === 'video') && item.tgFileId;
         await ctx.api.editMessageText(
           ack.chat.id,
           ack.message_id,
-          transcribing
-            ? `🎙 Принял, расшифровываю и определяю тему… (предварительно «${category}»)`
-            : `🔖 Принял, определяю тему… (предварительно «${category}»)`,
+          transcribing ? '🎙 Принял, расшифровываю…' : '🔖 Принял, обрабатываю…',
         );
       }
     } catch (err) {
       console.error('ingest error:', err);
       await ctx.api
-        .editMessageText(ack.chat.id, ack.message_id, '✅ Принял (категорию определю чуть позже)')
+        .editMessageText(ack.chat.id, ack.message_id, '✅ Принял (доиндексирую чуть позже)')
         .catch(() => {});
     }
   });

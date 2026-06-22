@@ -1,6 +1,5 @@
 import { chatJson } from '../ai/llm.js';
 import { PARSE_QUERY_SYSTEM, parseQueryPrompt } from '../ai/prompts.js';
-import { listClusters } from '../db/clusters.js';
 import { itemType, type Item } from '../db/schema.js';
 
 /** Тип единицы контента (выведен из enum схемы, без дублей). */
@@ -15,23 +14,18 @@ export interface ParsedQuery {
   sinceDays: number | null;
   /** Синонимы/расшифровки темы — подмешиваются в текст для эмбеддинга (ловят сленг). */
   expansions: string[];
-  /** id существующих кластеров, на которые ссылается запрос (прямой recall-путь). */
-  clusterIds: string[];
 }
 
 /** Допустимые значения типа из схемы (для валидации ответа LLM). */
 const VALID_TYPES = new Set<string>(itemType.enumValues);
 /** Какие типы вообще разрешаем как фильтр (tg_post/text — слишком общие, не фильтруем). */
 const FILTERABLE: ReadonlySet<string> = new Set(['document', 'image', 'video', 'link', 'voice']);
-/** Сколько имён категорий максимум отдаём модели — чтобы не раздувать промпт у «тяжёлых» юзеров. */
-const MAX_CLUSTER_NAMES = 80;
 
 const PASSTHROUGH = (raw: string): ParsedQuery => ({
   query: raw,
   types: [],
   sinceDays: null,
   expansions: [],
-  clusterIds: [],
 });
 
 interface RawParse {
@@ -39,7 +33,6 @@ interface RawParse {
   types?: unknown;
   sinceDays?: unknown;
   expansions?: unknown;
-  categories?: unknown;
 }
 
 function asStringArray(v: unknown, max: number): string[] {
@@ -51,9 +44,8 @@ function asStringArray(v: unknown, max: number): string[] {
 }
 
 /**
- * Разбор запроса в фильтры + синонимы + категории (один дешёвый LLM-вызов на каждый поиск).
- * Модель видит список категорий пользователя как кандидатов — так ловим сленг/неточности
- * («контра» → Counter-Strike → кластер «Киберспорт»), которые вектор и триграммы не перекидывают.
+ * Разбор запроса в фильтры + синонимы (один дешёвый LLM-вызов на каждый поиск). Категорий нет —
+ * сленг/неточности ловим query-expansion (синонимы/расшифровки), которые подмешиваются в вектор.
  * Никогда не бросает: при любой ошибке/мусоре возвращает passthrough (обычный семантический поиск).
  */
 export async function parseQuery(userId: number, raw: string): Promise<ParsedQuery> {
@@ -61,10 +53,7 @@ export async function parseQuery(userId: number, raw: string): Promise<ParsedQue
   if (!query) return PASSTHROUGH(query);
 
   try {
-    const clusters = await listClusters(userId);
-    const names = clusters.slice(0, MAX_CLUSTER_NAMES).map((c) => c.name);
-
-    const res = await chatJson<RawParse>(parseQueryPrompt(query, names), {
+    const res = await chatJson<RawParse>(parseQueryPrompt(query), {
       system: PARSE_QUERY_SYSTEM,
       temperature: 0,
       userId,
@@ -80,18 +69,12 @@ export async function parseQuery(userId: number, raw: string): Promise<ParsedQue
 
     const expansions = asStringArray(res.expansions, 8);
 
-    // Имена категорий из ответа → реальные id (без учёта регистра). Чужие/выдуманные имена отсекаются.
-    const byName = new Map(clusters.map((c) => [c.name.toLowerCase(), c.id]));
-    const clusterIds = asStringArray(res.categories, 16)
-      .map((n) => byName.get(n.toLowerCase()))
-      .filter((id): id is string => Boolean(id));
-
     const cleaned = typeof res.query === 'string' ? res.query.trim() : '';
     // Тема пуста только когда есть фильтр (метаданные-режим). Иначе — исходный запрос.
     const hasFilter = types.length > 0 || sinceDays !== null;
     const themeQuery = cleaned || (hasFilter ? '' : query);
 
-    return { query: themeQuery, types, sinceDays, expansions, clusterIds };
+    return { query: themeQuery, types, sinceDays, expansions };
   } catch (err) {
     console.error('parseQuery error:', err);
     return PASSTHROUGH(query);

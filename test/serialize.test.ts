@@ -18,8 +18,6 @@ const base = {
   tgFileUniqueId: null,
   mediaGroupId: null,
   embedding: [0.1, 0.2],
-  clusterId: 'c1',
-  clusterLocked: false,
   createdAt: new Date('2026-05-20T10:00:00Z'),
   indexedAt: new Date('2026-05-20T10:01:00Z'),
 } as unknown as Item;
@@ -46,7 +44,6 @@ describe('toItemDTO', () => {
       url: 'https://example.com',
       sourceChat: 'РБК',
       text: 'Моя заметка к ссылке',
-      clusterId: 'c1',
     });
     expect(dto.createdAt).toBe('2026-05-20T10:00:00.000Z');
   });

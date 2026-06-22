@@ -12,7 +12,6 @@
 import { and, eq, isNotNull, or, isNull, sql } from 'drizzle-orm';
 import { db } from '../src/db/client.js';
 import { items } from '../src/db/schema.js';
-import { getCluster, recomputeClusterStats } from '../src/db/clusters.js';
 import { startBoss, stopBoss } from '../src/queue/boss.js';
 import { enqueueProcess } from '../src/queue/index.js';
 
@@ -40,28 +39,15 @@ await startBoss();
 
 let sent = 0;
 for (const it of candidates) {
-  const prevClusterId = it.clusterId;
-  const prevName = prevClusterId ? ((await getCluster(prevClusterId))?.name ?? null) : null;
-
-  // Открываем гейты L2: indexed_at=NULL → документ перечитается; embedding=NULL → переэмбеддится
-  // уже С телом. cluster_id сбрасываем только без ручного lock — раскладку юзера не трогаем.
+  // Открываем гейты L2: indexed_at=NULL → документ перечитается; embedding=NULL → переэмбеддится уже С телом.
   await db
     .update(items)
-    .set({
-      indexedAt: null,
-      embedding: null,
-      ...(it.clusterLocked ? {} : { clusterId: null }),
-    })
+    .set({ indexedAt: null, embedding: null })
     .where(eq(items.id, it.id));
 
-  // Запись «ушла» из кластера — его центроид/size не должны её помнить.
-  if (!it.clusterLocked && prevClusterId) await recomputeClusterStats(prevClusterId);
-
-  // seed = старое имя кластера: консервативно (категория не скачет); если эмбеддинг тела реально
-  // ляжет к другой теме — assignCluster переложит сам.
-  await enqueueProcess(it.id, prevName ?? 'Разное');
+  await enqueueProcess(it.id);
   sent += 1;
-  console.log(`→ ${it.id} «${(it.title ?? '').slice(0, 50)}» (было: ${prevName ?? 'без кластера'})`);
+  console.log(`→ ${it.id} «${(it.title ?? '').slice(0, 50)}»`);
 }
 
 await stopBoss();

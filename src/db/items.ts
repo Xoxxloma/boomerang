@@ -1,7 +1,6 @@
 import { and, cosineDistance, desc, eq, inArray, isNotNull, isNull, ne, sql } from 'drizzle-orm';
 import { db } from './client.js';
 import { items, type Item, type NewItem } from './schema.js';
-import { recomputeClusterStats } from './clusters.js';
 import { tuning } from '../config/tuning.js';
 
 /** Каналы/авторы (sourceChat) пользователя с числом записей — для просмотра «по каналу» (/folders). */
@@ -16,49 +15,19 @@ export async function listChannels(userId: number): Promise<{ sourceChat: string
   return rows.map((r) => ({ sourceChat: r.sourceChat as string, count: r.count }));
 }
 
+/** Сколько записей юзер загрузил сам (без источника, sourceChat IS NULL) — псевдо-папка в /folders. */
+export async function countSelfUploaded(userId: number): Promise<number> {
+  const [c] = await db
+    .select({ total: sql<number>`count(*)::int` })
+    .from(items)
+    .where(and(eq(items.userId, userId), isNull(items.sourceChat)));
+  return c?.total ?? 0;
+}
+
 /** Страница записей + общее число — для пагинации внутри папки (/folders). Свежие сверху. */
 export interface ItemsPage {
   items: Item[];
   total: number;
-}
-
-/** Страница записей категории (кластера) — для открытия и листания папки в /folders. */
-export async function itemsByClusterPage(
-  userId: number,
-  clusterId: string,
-  limit: number,
-  offset: number,
-): Promise<ItemsPage> {
-  const where = and(eq(items.userId, userId), eq(items.clusterId, clusterId));
-  const rows = await db.select().from(items).where(where).orderBy(desc(items.createdAt)).limit(limit).offset(offset);
-  const [c] = await db.select({ total: sql<number>`count(*)::int` }).from(items).where(where);
-  return { items: rows, total: c?.total ?? 0 };
-}
-
-/**
- * Лёгкие контент-поля ВСЕХ записей кластера — для подсчёта содержательных (hasRealContent) в триггере
- * созревания и футере сводки. Не тащим vector и полные тела (документы до 40k): предикату важна лишь
- * непустота, а для ссылок (URL-стрип) хватает первых 500 символов rawText.
- */
-export async function listClusterContentFields(
-  userId: number,
-  clusterId: string,
-  limit = 500,
-): Promise<Pick<Item, 'type' | 'url' | 'title' | 'description' | 'rawText' | 'ocrText' | 'transcript' | 'sourceChat'>[]> {
-  return db
-    .select({
-      type: items.type,
-      url: items.url,
-      title: items.title,
-      description: sql<string | null>`left(${items.description}, 1)`,
-      rawText: sql<string | null>`left(${items.rawText}, 500)`,
-      ocrText: sql<string | null>`left(${items.ocrText}, 1)`,
-      transcript: sql<string | null>`left(${items.transcript}, 1)`,
-      sourceChat: items.sourceChat,
-    })
-    .from(items)
-    .where(and(eq(items.userId, userId), eq(items.clusterId, clusterId)))
-    .limit(limit);
 }
 
 /** Страница записей канала (по sourceChat) — для открытия и листания папки канала в /folders. */
@@ -69,6 +38,18 @@ export async function itemsBySourcePage(
   offset: number,
 ): Promise<ItemsPage> {
   const where = and(eq(items.userId, userId), eq(items.sourceChat, sourceChat));
+  const rows = await db.select().from(items).where(where).orderBy(desc(items.createdAt)).limit(limit).offset(offset);
+  const [c] = await db.select({ total: sql<number>`count(*)::int` }).from(items).where(where);
+  return { items: rows, total: c?.total ?? 0 };
+}
+
+/** Страница «Загружено вручную» (sourceChat IS NULL) — псевдо-папка в /folders. Свежие сверху. */
+export async function itemsBySelfUploadPage(
+  userId: number,
+  limit: number,
+  offset: number,
+): Promise<ItemsPage> {
+  const where = and(eq(items.userId, userId), isNull(items.sourceChat));
   const rows = await db.select().from(items).where(where).orderBy(desc(items.createdAt)).limit(limit).offset(offset);
   const [c] = await db.select({ total: sql<number>`count(*)::int` }).from(items).where(where);
   return { items: rows, total: c?.total ?? 0 };
@@ -217,17 +198,13 @@ export async function setOcrText(id: string, ocrText: string): Promise<void> {
 
 /**
  * Удалить item по запросу пользователя (§ удаление контента) — чтобы бот больше его не учитывал.
- * Проверяем владельца. FK clusterId → onDelete: set null, кластеры не ломаются.
- * Возвращает true, если запись существовала и принадлежала пользователю.
+ * Проверяем владельца. Возвращает true, если запись существовала и принадлежала пользователю.
  */
 export async function deleteItem(id: string, userId: number): Promise<boolean> {
   const res = await db
     .delete(items)
     .where(and(eq(items.id, id), eq(items.userId, userId)))
-    .returning({ id: items.id, clusterId: items.clusterId });
-  // Запись ушла из кластера — пересчитываем его центроид/size от истины (иначе они «помнят» удалённое).
-  const clusterId = res[0]?.clusterId;
-  if (clusterId) await recomputeClusterStats(clusterId);
+    .returning({ id: items.id });
   return res.length > 0;
 }
 
@@ -279,7 +256,7 @@ export async function listAnniversaryItems(
 
 /**
  * Недавно проиндексированные записи (есть embedding) — отправные точки pull-резонанса в Эхе: для каждой
- * ищем старого соседа по кластеру. Только с clusterId (резонанс ищется внутри кластера). Свежие сверху.
+ * ищем старого семантического соседа (findOlderSibling). Свежие сверху.
  */
 export async function listRecentIndexedItems(
   userId: number,
@@ -293,7 +270,6 @@ export async function listRecentIndexedItems(
       and(
         eq(items.userId, userId),
         isNotNull(items.embedding),
-        isNotNull(items.clusterId),
         sql`${items.createdAt} > now() - (${days} || ' days')::interval`,
       ),
     )
@@ -301,102 +277,59 @@ export async function listRecentIndexedItems(
     .limit(limit);
 }
 
-/** Направленный мост между кластерами: ca → cb. bridges — сколько записей ca имеют близкого соседа в cb. */
-export interface ClusterBridge {
-  ca: string;
-  cb: string;
-  /** Число записей кластера ca, у которых ближайший кросс-кластерный сосед (из cb) прошёл порог. */
-  bridges: number;
-  /** Максимальная item-похожесть среди этих пар — сила самой крепкой нити между темами. */
-  topSim: number;
+/** Узел «Созвездия» — сама запись (звезда). Полный Item: фронту нужны title/type/source. */
+export async function listIndexedItems(userId: number, limit: number): Promise<Item[]> {
+  return db
+    .select()
+    .from(items)
+    .where(and(eq(items.userId, userId), isNotNull(items.embedding)))
+    .orderBy(desc(items.createdAt))
+    .limit(limit);
+}
+
+/** Направленная связь между записями: a → b с косинус-близостью sim. */
+export interface ItemNeighbor {
+  aId: string;
+  bId: string;
+  sim: number;
 }
 
 /**
- * Мосты между кластерами для «Созвездия»: ребро темы значит «темы реально делят нити», а не «их
- * центроиды (усреднения) случайно рядом» — центроид теряет растворённую тему (кот в политическом посте).
- * Для каждой проиндексированной записи берём top-K ближайших соседей ИЗ ДРУГИХ кластеров (hnsw-индекс
- * items_embedding_idx), оставляем прошедших порог bridgeMinItemSim, агрегируем по направленной паре
- * кластеров. Дедуп/схлопывание в неориентированные рёбра — на стороне вызывающего (web-api/map).
+ * Рёбра «Созвездия» — семантические связи между записями (узлы=записи, не кластеры). Для каждой
+ * проиндексированной записи берём top-K ближайших соседей (hnsw-индекс items_embedding_idx), оставляем
+ * прошедших порог bridgeMinItemSim. Темы видны как визуальные сгущения (force-граф стягивает близкие),
+ * без имён-категорий. Дедуп в неориентированные рёбра + прорежение по узлу — на стороне route (web-api/map).
  */
-export async function listClusterBridges(userId: number): Promise<ClusterBridge[]> {
+export async function listItemNeighbors(userId: number): Promise<ItemNeighbor[]> {
   const knn = tuning.bridgeKnn;
   const minSim = tuning.bridgeMinItemSim;
   // Raw SQL: оператор '<=>' (cosine distance) между ДВУМЯ vector-колонками + LATERAL — drizzle-builder не выражает.
   const rows = (await db.execute(sql`
-    SELECT a.cluster_id AS ca,
-           n.cluster_id AS cb,
-           count(*)::int AS bridges,
-           max(1 - (a.embedding <=> n.embedding)) AS top_sim
+    SELECT a.id AS a_id, n.id AS b_id, 1 - (a.embedding <=> n.embedding) AS sim
     FROM items a
     CROSS JOIN LATERAL (
-      SELECT i.cluster_id, i.embedding
+      SELECT i.id, i.embedding
       FROM items i
       WHERE i.user_id = ${userId}
         AND i.embedding IS NOT NULL
-        AND i.cluster_id IS NOT NULL
-        AND i.cluster_id <> a.cluster_id
         AND i.id <> a.id
       ORDER BY i.embedding <=> a.embedding
       LIMIT ${knn}
     ) n
     WHERE a.user_id = ${userId}
       AND a.embedding IS NOT NULL
-      AND a.cluster_id IS NOT NULL
       AND (1 - (a.embedding <=> n.embedding)) >= ${minSim}
-    GROUP BY a.cluster_id, n.cluster_id
-  `)) as unknown as Array<{ ca: string; cb: string; bridges: number; top_sim: number }>;
-  return rows.map((r) => ({ ca: r.ca, cb: r.cb, bridges: Number(r.bridges), topSim: Number(r.top_sim) }));
-}
-
-/** Конкретная нить-мост: запись из кластера A перекликается с записью из кластера B (id + крепость). */
-export interface BridgePair {
-  aId: string;
-  bId: string;
-  similarity: number;
-}
-
-/**
- * Записи, реально связывающие две темы — «нити» под ребром «Созвездия» (тап по связи). Для каждой
- * записи кластера A находим близкие записи кластера B (item-level, тот же порог bridgeMinItemSim, что и
- * у рёбер). Возвращаем сырые пары по убыванию крепости; дедуп/выбор репрезентативных — на стороне route
- * (чтобы один «хаб»-пост не занял весь список). Кластеры обычно небольшие — попарный проход дёшев.
- */
-export async function listBridgePairs(
-  userId: number,
-  clusterA: string,
-  clusterB: string,
-  candidateCap = 60,
-): Promise<BridgePair[]> {
-  const minSim = tuning.bridgeMinItemSim;
-  const rows = (await db.execute(sql`
-    SELECT a.id AS a_id, b.id AS b_id, 1 - (a.embedding <=> b.embedding) AS sim
-    FROM items a
-    JOIN items b ON b.user_id = a.user_id AND b.cluster_id = ${clusterB} AND b.embedding IS NOT NULL
-    WHERE a.user_id = ${userId} AND a.cluster_id = ${clusterA} AND a.embedding IS NOT NULL
-      AND 1 - (a.embedding <=> b.embedding) >= ${minSim}
-    ORDER BY sim DESC
-    LIMIT ${candidateCap}
   `)) as unknown as Array<{ a_id: string; b_id: string; sim: number }>;
-  return rows.map((r) => ({ aId: r.a_id, bId: r.b_id, similarity: Number(r.sim) }));
-}
-
-/** Записи пользователя по списку id (батч) — для сборки нитей-мостов из сырых пар. Чужие отсекаем по userId. */
-export async function listItemsByIds(userId: number, ids: string[]): Promise<Item[]> {
-  if (ids.length === 0) return [];
-  return db
-    .select()
-    .from(items)
-    .where(and(eq(items.userId, userId), inArray(items.id, ids)));
+  return rows.map((r) => ({ aId: r.a_id, bId: r.b_id, sim: Number(r.sim) }));
 }
 
 /**
- * Самый похожий «старый сосед» в том же кластере — для проактивного резонанса (режим 2, триггер A).
- * Берём только достаточно старые item (createdAt < now() - minAgeDays), сортируем по близости
- * к queryVec (косинус). Паттерн похожести — как в retrieval/search.ts.
+ * Самый похожий «старый сосед» по смыслу — для pull-резонанса Эха (режим 2). Берём только достаточно
+ * старые item (createdAt < now() - minAgeDays), сортируем по близости к queryVec (косинус). Без привязки
+ * к кластеру (их больше нет) — резонанс это чистая семантическая перекличка.
  */
-export async function findOlderSiblingInCluster(
+export async function findOlderSibling(
   userId: number,
-  clusterId: string,
   excludeId: string,
   queryVec: number[],
   minAgeDays: number,
@@ -409,9 +342,11 @@ export async function findOlderSiblingInCluster(
     .where(
       and(
         eq(items.userId, userId),
-        eq(items.clusterId, clusterId),
         ne(items.id, excludeId),
         isNotNull(items.embedding),
+        // Порог переклички: без кластера-скоупа нужен явный минимум, иначе вернётся ближайший старый
+        // даже при нулевой связи (шум). Тот же порог, что у рёбер «Созвездия» — единая «реальная нить».
+        sql`1 - (${cosineDistance(items.embedding, queryVec)}) >= ${tuning.bridgeMinItemSim}`,
         sql`${items.createdAt} < now() - (${minAgeDays} || ' days')::interval`,
       ),
     )

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import ForceGraph2D from 'react-force-graph-2d';
 import { api } from '../lib/api.js';
-import type { MapResponse, MapNode } from '../lib/types.js';
+import type { MapResponse, MapNode, ItemDTO } from '../lib/types.js';
 import { BeamLoader, EmptyState } from '../components/States.js';
 import { hapticTap } from '../lib/telegram.js';
 
@@ -17,19 +17,97 @@ const C = {
 
 type SimNode = MapNode & { x?: number; y?: number };
 // force-graph мутирует source/target из id-строк в объекты-узлы после старта симуляции — допускаем оба.
-type SimLink = { source?: SimNode | string; target?: SimNode | string; weight?: number; bridges?: number };
+type SimLink = { source?: SimNode | string; target?: SimNode | string; weight?: number };
 
 function nodeRadius(size: number): number {
-  return Math.min(26, 5 + Math.sqrt(size) * 1.7);
+  return Math.min(26, 6 + Math.sqrt(size) * 1.7);
 }
 
-export function MapScreen({
-  onOpenCluster,
-  onOpenBridge,
-}: {
-  onOpenCluster: (id: string, name: string) => void;
-  onOpenBridge: (a: string, b: string) => void;
-}) {
+// Тап-таргет: невидимая хит-зона на ТЕНЕВОМ канвасе. Рисуется в координатах графа, потому на
+// отдалённом зуме ужимается множителем зума — гарантируем минимум в ЭКРАННЫХ px (делим на зум).
+const MIN_TAP_PX = 20; // минимальный «палец» в экранных px
+const HIT_PAD = 4; // прежний запас в координатах графа
+function hitRadius(size: number, globalScale: number): number {
+  return Math.max(nodeRadius(size) + HIT_PAD, MIN_TAP_PX / globalScale);
+}
+
+// Подпись: обрезаем длинный name до читаемой строки. По границе слова, если пробел не слишком рано.
+const LABEL_MAX = 22;
+function clampLabel(name: string, max = LABEL_MAX): string {
+  const s = name.trim();
+  if (s.length <= max) return s;
+  const cut = s.slice(0, max);
+  const sp = cut.lastIndexOf(' ');
+  const base = sp > max * 0.6 ? cut.slice(0, sp) : cut;
+  return base.replace(/[\s.,;:–—-]+$/, '') + '…';
+}
+
+// Анти-наложение подписей: per-frame список занятых прямоугольников (сброс в onRenderFramePre).
+// Само работает как LOD: пробуем подписать ВСЕ узлы в порядке приоритета (степень убыв.), но рисуем
+// лишь те, что не пересекают уже размещённые. Зум-аут → крупные боксы → влезает мало (чисто);
+// зум-ин → влезает больше. Топ-приоритет влезает всегда → карта никогда не пустая.
+type Box = { x0: number; y0: number; x1: number; y1: number };
+const occupied: Box[] = [];
+function overlaps(b: Box): boolean {
+  for (const o of occupied)
+    if (b.x0 < o.x1 && b.x1 > o.x0 && b.y0 < o.y1 && b.y1 > o.y0) return true;
+  return false;
+}
+
+// Скруглённый прямоугольник: ctx.roundRect новый — ручной фолбэк через arcTo для старых WebView.
+function pathRoundRect(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  r: number,
+): void {
+  if (ctx.roundRect) {
+    ctx.beginPath();
+    ctx.roundRect(x, y, w, h, r);
+    return;
+  }
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+
+/** Нарисовать подпись узла с пилюлей-подложкой; вернуть false, если место занято (метка не нарисована). */
+function drawLabel(
+  ctx: CanvasRenderingContext2D,
+  text: string,
+  x: number,
+  y: number,
+  r: number,
+  scale: number,
+  hot: boolean,
+): boolean {
+  const fontSize = Math.max(3.5, 11 / scale);
+  ctx.font = `500 ${fontSize}px 'Golos Text', system-ui, sans-serif`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'top';
+  const w = ctx.measureText(text).width;
+  const padX = 4 / scale;
+  const padY = 2 / scale;
+  const rad = 4 / scale;
+  const by = y + r + 3 / scale;
+  const box: Box = { x0: x - w / 2 - padX, y0: by, x1: x + w / 2 + padX, y1: by + fontSize + padY * 2 };
+  if (!hot && overlaps(box)) return false;
+  occupied.push(box);
+  ctx.fillStyle = 'rgba(20,21,32,0.66)';
+  pathRoundRect(ctx, box.x0, box.y0, box.x1 - box.x0, box.y1 - box.y0, rad);
+  ctx.fill();
+  ctx.fillStyle = hot ? C.label : C.labelMuted;
+  ctx.fillText(text, x, by + padY);
+  return true;
+}
+
+export function MapScreen({ onOpenItem }: { onOpenItem: (it: ItemDTO) => void }) {
   const wrapRef = useRef<HTMLDivElement>(null);
   // Ref на инстанс графа — для подгонки камеры и настройки сил (расталкивание/длина связей).
   type ForceCfg = { strength?: (n: number) => void; distance?: (n: number) => void } | undefined;
@@ -85,7 +163,9 @@ export function MapScreen({
   // force-graph мутирует объекты (x/y) — копируем, чтобы не трогать состояние React напрямую.
   const graphData = useMemo(
     () => ({
-      nodes: (data?.nodes ?? []).map((n) => ({ ...n })) as SimNode[],
+      // Сортируем по убыванию size: хабы обходятся первыми → первыми занимают слоты подписей.
+      // Сортируем копию (свежий {...n}), не трогая data.
+      nodes: (data?.nodes ?? []).map((n) => ({ ...n })).sort((a, b) => b.size - a.size) as SimNode[],
       links: (data?.edges ?? []).map((e) => ({ ...e })),
     }),
     [data],
@@ -124,7 +204,7 @@ export function MapScreen({
       <div className="map-wrap" ref={wrapRef}>
         <div className="map-hud">
           <h1 className="display">Созвездие</h1>
-          <span className="meta">{data.nodes.length} тем · тяни и приближай</span>
+          <span className="meta">{data.nodes.length} записей · тяни и приближай</span>
         </div>
         {size.w > 0 && (
           <ForceGraph2D
@@ -136,6 +216,18 @@ export function MapScreen({
             cooldownTicks={120}
             d3VelocityDecay={0.32}
             warmupTicks={20}
+            maxZoom={8}
+            onRenderFramePre={() => {
+              occupied.length = 0; // сброс занятых боксов в начале кадра
+            }}
+            onRenderFramePost={(ctx: CanvasRenderingContext2D, scale: number) => {
+              // Подпись наведённого узла рисуем последней — поверх всех, без перекрытия пилюлями соседей.
+              const id = hoverRef.current;
+              if (!id) return;
+              const n = graphData.nodes.find((nd) => nd.id === id);
+              if (!n) return;
+              drawLabel(ctx, clampLabel(n.name), n.x ?? 0, n.y ?? 0, nodeRadius(n.size), scale, true);
+            }}
             onEngineStop={() => {
               if (didFitRef.current) return; // не сбрасываем зум на реёгрев от перетаскивания
               didFitRef.current = true;
@@ -144,29 +236,26 @@ export function MapScreen({
             linkColor={(l: SimLink) =>
               `${C.ringDim}${(0.12 + (l.weight ?? 0.4) * 0.35).toFixed(2)})`
             }
-            linkWidth={(l: SimLink) => 0.5 + Math.min(2.2, Math.log2(1 + (l.bridges ?? 1)) * 0.8)}
+            linkWidth={(l: SimLink) => 0.5 + Math.min(2.2, (l.weight ?? 0.4) * 2.4)}
             linkHoverPrecision={8}
-            onLinkClick={(l: SimLink) => {
-              // После старта симуляции source/target — объекты-узлы; до неё могут быть id-строками.
-              const s = typeof l.source === 'object' ? l.source?.id : l.source;
-              const t = typeof l.target === 'object' ? l.target?.id : l.target;
-              if (s && t) {
-                hapticTap();
-                onOpenBridge(s, t);
-              }
-            }}
             onNodeClick={(n: SimNode) => {
               hapticTap();
-              onOpenCluster(n.id, n.name);
+              onOpenItem(n);
             }}
             onNodeHover={(n: SimNode | null) => {
               hoverRef.current = n?.id ?? null;
             }}
-            nodePointerAreaPaint={(node: SimNode, color: string, ctx: CanvasRenderingContext2D) => {
-              const r = nodeRadius(node.size);
+            nodePointerAreaPaint={(
+              node: SimNode,
+              color: string,
+              ctx: CanvasRenderingContext2D,
+              globalScale: number,
+            ) => {
+              // Хит-зона с минимумом в экранных px (см. hitRadius) — мелкие звёзды уверенно тапаются.
+              const r = hitRadius(node.size, globalScale);
               ctx.fillStyle = color;
               ctx.beginPath();
-              ctx.arc(node.x ?? 0, node.y ?? 0, r + 4, 0, 2 * Math.PI);
+              ctx.arc(node.x ?? 0, node.y ?? 0, r, 0, 2 * Math.PI);
               ctx.fill();
             }}
             nodeCanvasObject={(node: SimNode, ctx: CanvasRenderingContext2D, scale: number) => {
@@ -195,13 +284,12 @@ export function MapScreen({
               ctx.strokeStyle = hot ? C.beam : C.ring;
               ctx.stroke();
 
-              // Подпись темы под узлом.
-              const fontSize = Math.max(3.5, 11 / scale);
-              ctx.font = `500 ${fontSize}px 'Golos Text', system-ui, sans-serif`;
-              ctx.textAlign = 'center';
-              ctx.textBaseline = 'top';
-              ctx.fillStyle = hot ? C.label : C.labelMuted;
-              ctx.fillText(node.name, x, y + r + 3 / scale);
+              // Подпись: наведённый узел рисует onRenderFramePost (поверх всех). Остальным пробуем
+              // подписать — drawLabel вернёт false и пропустит, если место под меткой уже занято.
+              // Антиналожение + приоритет (узлы отсортированы по степени) работают как LOD.
+              if (!hot) {
+                drawLabel(ctx, clampLabel(node.name), x, y, r, scale, false);
+              }
             }}
           />
         )}
