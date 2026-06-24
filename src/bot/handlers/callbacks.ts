@@ -119,16 +119,12 @@ async function showCard(ctx: Context, item: Item): Promise<void> {
 }
 
 /**
- * Клавиатура под сообщением о дубле: «↑ Источник» (реплай к оригиналу — единственный нативный
- * способ «дать ссылку» в личке) + удаление. 🔗 Открыть — если у записи есть внешний url.
- * Колбэки src:/del: уже зарегистрированы.
+ * Клавиатура под сообщением о дубле: одна кнопка, открывающая полную карточку записи — тот же UI,
+ * что и в результатах поиска (card:). В карточке уже живут «🔗 Открыть», «↑ Источник», «🪃 Напомнить»
+ * и рабочее удаление (delc: → подтверждение). Колбэк card: уже зарегистрирован.
  */
-export function sourceKeyboard(item: Item): InlineKeyboard {
-  const kb = new InlineKeyboard();
-  if (item.url) kb.url('🔗 Открыть', item.url);
-  if (item.tgMessageId) kb.text('↑ Источник', `src:${item.id}`);
-  kb.text('🗑 Удалить', `del:${item.id}`);
-  return kb;
+export function duplicateKeyboard(item: Item): InlineKeyboard {
+  return new InlineKeyboard().text('🗂 Открыть карточку', `card:${item.id}`);
 }
 
 export function registerCallbacks(bot: Bot): void {

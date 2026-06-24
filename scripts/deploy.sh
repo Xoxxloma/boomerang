@@ -20,6 +20,11 @@ npm ci --no-audit --no-fund
 echo "→ сборка Mini App (Vite → dist/web; раздаётся Hono-сервером в проде)"
 npm run build:web
 
+echo "→ поднимаем self-host БД (Postgres+pgvector) и морду pgweb"
+# Идемпотентно: если контейнеры уже запущены — no-op. Секреты берутся из .env.production (--env-file).
+# Контейнеры с restart:unless-stopped, поэтому переживают reboot независимо от systemd-сервиса бота.
+docker compose --env-file .env.production -f docker-compose.prod.yml up -d
+
 echo "→ миграции на прод-БД (идемпотентно: drizzle пропустит применённые)"
 npm run db:migrate:prod
 

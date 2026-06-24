@@ -1,0 +1,62 @@
+# Прод-БД Boomerang: Postgres + pgvector НА САМОМ VPS (self-host вместо облачной Neon).
+# Причина миграции: free-Neon тарифицирует compute-часы, а бот 24/7 не даёт БД заснуть → лимит выжигается.
+# Self-host убирает лимит по часам, потолок объёма = диск, БД рядом с ботом (без egress/задержки).
+#
+# Поднимается НЕ вручную, а из scripts/deploy.sh командой:
+#   docker compose --env-file .env.production -f docker-compose.prod.yml up -d
+# (--env-file .env.production → все секреты ниже берутся оттуда же, где и остальной конфиг).
+#
+# Порты ТОЛЬКО на loopback (127.0.0.1): ни БД, ни морда наружу не светят.
+# pgweb наружу публикует Caddy (TLS), а логин/пароль на морду проверяет сам pgweb (PGWEB_AUTH_*).
+services:
+  db:
+    image: pgvector/pgvector:pg17
+    container_name: boomerang-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: boomerang
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD нет в .env.production}
+      POSTGRES_DB: boomerang
+    # Только loopback: к БД ходит лишь бот с этого же хоста (DATABASE_URL=...@127.0.0.1:5432).
+    ports:
+      - "127.0.0.1:5432:5432"
+    # Тюнинг под ~2 ГБ RAM: БД делит хост с ботом, поэтому shared_buffers не раздуваем.
+    command:
+      - postgres
+      - -c
+      - shared_buffers=256MB
+      - -c
+      - effective_cache_size=512MB
+      - -c
+      - work_mem=16MB
+      - -c
+      - maintenance_work_mem=128MB
+      - -c
+      - max_connections=40
+    volumes:
+      - boomerang_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U boomerang -d boomerang"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # Лёгкая веб-морда для просмотра БД (требование «удобный просмотр, как в облаке»).
+  # НЕ self-hosted Supabase Studio — та тянет несколько контейнеров и съест всю RAM.
+  # pgweb — один Go-бинарь (~40 МБ). Логин/пароль (PGWEB_AUTH_*) проверяет сам pgweb.
+  pgweb:
+    image: sosedoff/pgweb:latest
+    container_name: boomerang-pgweb
+    restart: unless-stopped
+    environment:
+      PGWEB_DATABASE_URL: postgres://boomerang:${DB_PASSWORD:?DB_PASSWORD нет в .env.production}@db:5432/boomerang?sslmode=disable
+      PGWEB_AUTH_USER: ${PGWEB_AUTH_USER:?PGWEB_AUTH_USER нет в .env.production}
+      PGWEB_AUTH_PASS: ${PGWEB_AUTH_PASS:?PGWEB_AUTH_PASS нет в .env.production}
+    ports:
+      - "127.0.0.1:8081:8081"
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  boomerang_pgdata:

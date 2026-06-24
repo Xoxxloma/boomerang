@@ -1,0 +1,18 @@
+# systemd unit для ночного бэкапа self-host БД Boomerang (запускается таймером, см. .timer рядом).
+# Установка:
+#   sudo cp deploy/boomerang-backup.service /etc/systemd/system/boomerang-backup.service
+#   sudo cp deploy/boomerang-backup.timer   /etc/systemd/system/boomerang-backup.timer
+#   sudo nano /etc/systemd/system/boomerang-backup.service   # подставить WorkingDirectory под свой стенд
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now boomerang-backup.timer
+#   systemctl list-timers boomerang-backup.timer            # проверить следующий запуск
+
+[Unit]
+Description=Boomerang DB backup (pg_dump self-host)
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/boomerang
+ExecStart=/usr/bin/env sh scripts/backup.sh

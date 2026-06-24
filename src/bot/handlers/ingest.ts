@@ -3,7 +3,7 @@ import { bufferAlbumPart } from '../../ingest/album.js';
 import { saveItem, duplicateText } from '../../ingest/save.js';
 import { maybeBufferBurst } from '../../import/burst.js';
 import { isExportDocument, handleExport } from '../../import/export.js';
-import { sourceKeyboard } from './callbacks.js';
+import { duplicateKeyboard } from './callbacks.js';
 
 /**
  * Приём контента — Level 1 (синхронно, §5):
@@ -45,7 +45,7 @@ export function registerIngest(bot: Bot): void {
       if (duplicate) {
         // Тот же пост уже сохранён → не задвоили; даём перейти к оригиналу (§ тезис: дубли не копим).
         await ctx.api.editMessageText(ack.chat.id, ack.message_id, duplicateText(item), {
-          reply_markup: sourceKeyboard(item),
+          reply_markup: duplicateKeyboard(item),
         });
       } else {
         // L2 добудет заголовок (vision/STT/OG) и финализирует это сообщение «✅ Принял — «заголовок»»

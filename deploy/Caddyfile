@@ -14,3 +14,11 @@
 	# Бот и API живут в одном процессе на WEB_PORT; long polling портов не слушает — конфликта нет.
 	reverse_proxy localhost:8787
 }
+
+# Морда self-host БД (pgweb) — Caddy только проксирует и даёт TLS; логин/пароль спрашивает сам
+# pgweb (PGWEB_AUTH_USER/PGWEB_AUTH_PASS из .env.production). pgweb слушает 127.0.0.1:8081
+# (см. docker-compose.prod.yml). nip.io: поддомен db.<IP>.nip.io тоже резолвится в этот IP.
+db.147.45.152.170.nip.io {
+	encode zstd gzip
+	reverse_proxy localhost:8081
+}

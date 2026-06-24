@@ -1,0 +1,12 @@
+# Таймер ежедневного бэкапа БД Boomerang. Установка — см. шапку boomerang-backup.service.
+
+[Unit]
+Description=Ежедневный бэкап БД Boomerang
+
+[Timer]
+# 03:30 по времени сервера. Persistent=true — наверстает пропущенный запуск, если VPS был выключен.
+OnCalendar=*-*-* 03:30:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
