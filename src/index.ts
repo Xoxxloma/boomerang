@@ -23,6 +23,7 @@ async function main() {
     { command: 'folders', description: 'Источники: каналы и загруженное вручную' },
     { command: 'digest', description: 'Свежее за неделю: что стоит вернуть' },
     { command: 'import', description: 'Залить старое из «Избранного» пачкой' },
+    { command: 'help', description: 'Написать в поддержку' },
     { command: 'start', description: 'Что умеет бот' },
   ]);
 

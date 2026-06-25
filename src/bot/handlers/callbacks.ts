@@ -2,6 +2,8 @@ import { InlineKeyboard, type Bot, type Context } from 'grammy';
 import { getItem, deleteItem, itemDisplayName } from '../../db/items.js';
 import { enqueueProcess } from '../../queue/index.js';
 import { discardEmptyImport, startImport } from '../../import/burst.js';
+import { saveItem, duplicateText } from '../../ingest/save.js';
+import { handleQuery } from './search.js';
 import type { Item } from '../../db/schema.js';
 
 /**
@@ -128,6 +130,46 @@ export function duplicateKeyboard(item: Item): InlineKeyboard {
 }
 
 export function registerCallbacks(bot: Bot): void {
+  // Развилка «Найти / Сохранить» по сырому набранному тексту (ingest.ts шлёт «Что делаем?» как reply).
+  // Текст берём из reply_to_message — stateless, без таблицы (в callback_data он бы не влез, лимит 64б).
+  bot.callbackQuery(/^fork:(search|save)$/, async (ctx) => {
+    const action = ctx.match[1]!; // 'search' | 'save'
+    const cbMsg = ctx.callbackQuery.message;
+    // reply_to_message есть только у полного Message (не InaccessibleMessage) — narrowing через 'in'.
+    const original = cbMsg && 'reply_to_message' in cbMsg ? cbMsg.reply_to_message : undefined;
+    const text = original?.text?.trim();
+    const chatId = ctx.chat?.id;
+
+    // Контекст потерян: развилка протухла (>48ч → inaccessible) либо исходный текст недоступен.
+    if (!cbMsg || !original || !text || chatId == null) {
+      await ctx.editMessageText('Текст потерялся — напиши заново.').catch(() => {});
+      return ctx.answerCallbackQuery();
+    }
+
+    if (action === 'search') {
+      // Развилку убираем целиком: итог поиска придёт отдельным сообщением со своими кнопками-источниками.
+      await ctx.deleteMessage().catch(() => {});
+      await handleQuery(ctx, text);
+      return ctx.answerCallbackQuery();
+    }
+
+    // 'save': переиспользуем развилку как ack-сообщение. editMessageText снимает inline-кнопки →
+    // защита от двойного тапа; повторное сохранение отсёк бы findDuplicateItem внутри saveItem.
+    // detectReminder:true — «напомни …» ловится тем же дешёвым вызовом, как при обычном приёме.
+    await ctx.editMessageText('🔖 Принял, обрабатываю…').catch(() => {});
+    const ackRef = { chatId, messageId: cbMsg.message_id };
+    const { item, duplicate } = await saveItem(ctx.api, ctx.from.id, original, ackRef, {
+      detectReminder: true,
+    });
+    if (duplicate) {
+      await ctx
+        .editMessageText(duplicateText(item), { reply_markup: duplicateKeyboard(item) })
+        .catch(() => {});
+    }
+    // Не дубль → L2-воркер финализирует это же ack-сообщение в «✅ Принял — «заголовок»» (queue/worker.ts).
+    await ctx.answerCallbackQuery();
+  });
+
   // «Повторить» из сообщения о сбое индексации — перезапуск L2 для КОНКРЕТНОЙ записи (это сообщение).
   // notifyOnSuccess: при успехе воркер обновит это же сообщение на «доиндексировал».
   bot.callbackQuery(/^reidx:(.+)$/, async (ctx) => {

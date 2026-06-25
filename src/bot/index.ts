@@ -10,6 +10,7 @@ import { registerCallbacks } from './handlers/callbacks.js';
 import { registerBrowse } from './handlers/browse.js';
 import { registerIngest } from './handlers/ingest.js';
 import { registerReminders } from './handlers/reminders.js';
+import { registerSupport } from './handlers/support.js';
 import { searchReplyKeyboard } from './handlers/search.js';
 
 export function createBot(): Bot {
@@ -64,6 +65,9 @@ export function createBot(): Bot {
   // Напоминания — ПОСЛЕ поиска, ДО приёма: ловит только force_reply «Своё время» (через remind_pending),
   // на остальном message:text делает next() → обычный текст уходит в ingest как раньше.
   registerReminders(bot);
+  // Поддержка — ПОСЛЕ поиска/напоминаний, ДО приёма: ловит ответ на /help и реплай админа,
+  // на остальном message:text делает next() → обычный текст уходит в ingest как раньше.
+  registerSupport(bot);
   registerIngest(bot);
 
   bot.catch((err) => {
