@@ -4,6 +4,7 @@ import { describeImage } from '../../ai/vision.js';
 import { QuotaExceededError, BudgetExhaustedError } from '../../ai/errors.js';
 import {
   getItem,
+  setBodyText,
   setDescription,
   setEmbedding,
   setOcrText,
@@ -13,6 +14,7 @@ import {
   markIndexed,
 } from '../../db/items.js';
 import { buildIndexText } from '../../ingest/extract.js';
+import { fetchArticleBody } from '../../content/article.js';
 import {
   classifyWithTitle,
   classifyWithTitleAndReminder,
@@ -162,6 +164,20 @@ export async function processItem(
         await setReminder(itemId, itemRef2.userId, res.reminder.whenAt);
       }
     }
+  }
+
+  // Ссылка: дочитываем тело статьи (readability) и кладём в индекс — чтобы запись находилась по
+  // СОДЕРЖАНИЮ, а не только по title/OG. Триггер — наличие url (а не тип 'link': ссылка бывает и в
+  // подписи к медиа). Гейт `bodyStatus == null` — идемпотентность ретрая (как !ocrText/!transcript):
+  // повторно не качаем. fetch+readability бесплатны; тело вливается в ОДИН эмбеддинг ниже (без второго).
+  // Сбой/заглушка/SPA/skip-домен → fetchArticleBody вернёт null → помечаем 'unreadable', откат на OG.
+  if (item.url && item.bodyStatus == null) {
+    const body = await fetchArticleBody(item.url).catch((err) => {
+      console.error('article fetch error:', { itemId, err });
+      return null;
+    });
+    await setBodyText(itemId, body, body ? 'ok' : 'unreadable');
+    item = (await getItem(itemId)) ?? item; // body_text попадёт в buildIndexText ниже
   }
 
   const indexText = buildIndexText(item).slice(0, MAX_EMBED_CHARS);

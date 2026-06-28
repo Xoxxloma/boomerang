@@ -4,6 +4,7 @@ import { search, listByFilter, type SearchHit } from '../../retrieval/search.js'
 import { parseQuery } from '../../retrieval/parseQuery.js';
 import { synthesize, extractCitedIndices, sourceName } from '../../retrieval/synthesize.js';
 import { checkUserBudget, breakerState, formatResetUtc } from '../../ai/usage.js';
+import { tuning } from '../../config/tuning.js';
 import type { Item } from '../../db/schema.js';
 
 /** Текст приглашения к поиску — по нему же ловим ответ (эту строку шлёт только бот). */
@@ -105,11 +106,18 @@ export async function handleQuery(ctx: Context, query: string): Promise<void> {
 
   let hits;
   try {
-    hits = await search(userId, parsed.query || query, {
-      types: parsed.types,
-      sinceDays: parsed.sinceDays,
-      expansions: parsed.expansions,
-    });
+    const opts = { types: parsed.types, sinceDays: parsed.sinceDays, expansions: parsed.expansions };
+    hits = await search(userId, parsed.query || query, opts);
+    // Пустая выдача ≠ «нет в архиве»: релевантное могло не пройти обычный порог из-за разрыва
+    // формулировок (спросили «не теми словами»). Второй проход с recall-порогом (ниже) поднимает
+    // близкое; шум сдерживают лимит выдачи + сортировка по убыванию похожести. Один дешёвый доп-embed
+    // ТОЛЬКО на пустой выдаче.
+    if (hits.length === 0) {
+      hits = await search(userId, parsed.query || query, {
+        ...opts,
+        minSimilarity: tuning.searchRecallMinSimilarity,
+      });
+    }
   } catch (err) {
     // Эмбеддинг/БД отвалились (напр. OpenAI через VPN) — поиск это главный сценарий, нельзя молчать.
     console.error('search error:', err);

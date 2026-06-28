@@ -100,6 +100,7 @@ function draftIndexable(d: Draft): Indexable {
     rawText: d.rawText,
     ocrText: null,
     transcript: null,
+    bodyText: null,
     sourceChat: d.sourceChat,
   };
 }

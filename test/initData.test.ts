@@ -17,41 +17,41 @@ function sign(params: Record<string, string>): string {
   return usp.toString();
 }
 
-const NOW = 1_700_000_000_000; // фиксируем «сейчас» для проверки окна свежести
-const fresh = { auth_date: String(Math.floor(NOW / 1000)), user: JSON.stringify({ id: 42, first_name: 'Кот' }) };
+// auth_date оставляем валидным числом, но свежесть больше не проверяется — см. initData.ts.
+const fresh = { auth_date: '1700000000', user: JSON.stringify({ id: 42, first_name: 'Кот' }) };
 
 describe('verifyInitData', () => {
   it('валидная подпись принимается, отдаёт user_id', () => {
-    const res = verifyInitData(sign(fresh), TOKEN, NOW);
+    const res = verifyInitData(sign(fresh), TOKEN);
     expect(res.ok).toBe(true);
     expect(res.userId).toBe(42);
   });
 
   it('подделанные данные (hash не сходится) отвергаются', () => {
     const tampered = sign(fresh).replace('id%22%3A42', 'id%22%3A999'); // подменили user_id в payload
-    const res = verifyInitData(tampered, TOKEN, NOW);
+    const res = verifyInitData(tampered, TOKEN);
     expect(res.ok).toBe(false);
     expect(res.reason).toBe('bad-hash');
   });
 
   it('чужой токен не проходит', () => {
-    const res = verifyInitData(sign(fresh), 'other-token', NOW);
+    const res = verifyInitData(sign(fresh), 'other-token');
     expect(res.ok).toBe(false);
     expect(res.reason).toBe('bad-hash');
   });
 
-  it('просроченный initData (старше окна) отвергается', () => {
-    const old = { ...fresh, auth_date: String(Math.floor(NOW / 1000) - 48 * 3600) };
-    const res = verifyInitData(sign(old), TOKEN, NOW);
-    expect(res.ok).toBe(false);
-    expect(res.reason).toBe('expired');
+  it('старый auth_date всё равно принимается (свежесть не проверяем — кейс кнопки-меню)', () => {
+    const old = { ...fresh, auth_date: String(Math.floor(1700000000 - 48 * 3600)) };
+    const res = verifyInitData(sign(old), TOKEN);
+    expect(res.ok).toBe(true);
+    expect(res.userId).toBe(42);
   });
 
   it('отсутствие hash → отказ', () => {
-    expect(verifyInitData('user=%7B%7D&auth_date=1', TOKEN, NOW).reason).toBe('no-hash');
+    expect(verifyInitData('user=%7B%7D&auth_date=1', TOKEN).reason).toBe('no-hash');
   });
 
   it('пустая строка → отказ', () => {
-    expect(verifyInitData('', TOKEN, NOW).ok).toBe(false);
+    expect(verifyInitData('', TOKEN).ok).toBe(false);
   });
 });

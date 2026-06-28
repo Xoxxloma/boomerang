@@ -16,13 +16,15 @@ export interface Synthesis {
  *  Запись без настоящего содержимого (только имя файла/ссылка) явно помечаем — иначе LLM сочиняет
  *  факты из имени файла (инцидент: «ДДУ зарегистрирован…» из имени pdf). Экспорт — для юнитов. */
 export function snippet(it: Item): string {
-  const parts = [it.title, it.description, it.rawText, it.ocrText, it.transcript]
+  const parts = [it.title, it.description, it.rawText, it.ocrText, it.transcript, it.bodyText]
     .filter((s): s is string => Boolean(s && s.trim()))
     .join(' — ');
-  // Транскрипт голосового/видео — как тело документа: фактура размазана по тексту, 600 символов
-  // дали бы LLM обрывок начала. Даём документный потолок.
+  // Транскрипт голосового/видео и дочитанное тело статьи — как тело документа: фактура размазана по
+  // тексту, 600 символов дали бы LLM обрывок начала. Даём документный потолок.
   const cap =
-    it.type === 'document' || it.transcript?.trim() ? tuning.synthDocChars : tuning.synthSnippetChars;
+    it.type === 'document' || it.transcript?.trim() || it.bodyText?.trim()
+      ? tuning.synthDocChars
+      : tuning.synthSnippetChars;
   const body = parts.slice(0, cap);
   const marked = hasRealContent(it)
     ? body

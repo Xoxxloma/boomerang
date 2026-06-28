@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { search, listByFilter } from '../../retrieval/search.js';
 import { parseQuery } from '../../retrieval/parseQuery.js';
 import { checkUserBudget, formatResetUtc } from '../../ai/usage.js';
+import { tuning } from '../../config/tuning.js';
 import { toItemDTO } from '../serialize.js';
 import { buildSynthResponse } from '../synthResponse.js';
 import type { AuthVars } from '../server.js';
@@ -45,11 +46,16 @@ searchRoutes.post('/search', async (c) => {
     });
   }
 
-  const hits = await search(userId, parsed.query || query, {
-    types: parsed.types,
-    sinceDays: parsed.sinceDays,
-    expansions: parsed.expansions,
-  });
+  const opts = { types: parsed.types, sinceDays: parsed.sinceDays, expansions: parsed.expansions };
+  let hits = await search(userId, parsed.query || query, opts);
+  // Пустая выдача ≠ «нет в архиве»: второй проход с recall-порогом (ниже обычного) поднимает близкое,
+  // что не прошло из-за разрыва формулировок. Зеркало handleQuery — иначе бот и Mini App расходились бы.
+  if (hits.length === 0) {
+    hits = await search(userId, parsed.query || query, {
+      ...opts,
+      minSimilarity: tuning.searchRecallMinSimilarity,
+    });
+  }
 
   if (hits.length === 0) return c.json({ mode: 'empty', answer: null, sources: [], cited: [] });
 

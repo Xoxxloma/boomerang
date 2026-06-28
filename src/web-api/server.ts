@@ -7,6 +7,7 @@ import { searchRoutes } from './routes/search.js';
 import { mapRoutes } from './routes/map.js';
 import { echoRoutes } from './routes/echo.js';
 import { remindersRoutes } from './routes/reminders.js';
+import { itemsRoutes } from './routes/items.js';
 
 /** Переменные контекста после telegramAuth — общий тип для всех роутов. */
 export type AuthVars = { userId: number; tgUser: InitDataUser };
@@ -22,6 +23,7 @@ function buildApp(): Hono {
   api.route('/', mapRoutes);
   api.route('/', echoRoutes);
   api.route('/', remindersRoutes);
+  api.route('/', itemsRoutes);
 
   const app = new Hono();
   app.get('/healthz', (c) => c.text('ok')); // для пробы Caddy/uptime

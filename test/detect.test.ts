@@ -56,6 +56,27 @@ describe('detect', () => {
     expect(d.text).toContain('Доте');
   });
 
+  it('фото с подписью-ссылкой: тип text, но url проставлен (для дочитывания в L2)', () => {
+    const d = detect(
+      msg({
+        photo: [{ file_id: 'a', file_unique_id: 'a', width: 1, height: 1 }],
+        caption: 'обзор тут https://example.com/post полезно почитать',
+      }),
+    );
+    expect(d.type).toBe('text');
+    expect(d.url).toBe('https://example.com/post');
+  });
+
+  it('фото без ссылки в подписи — url не проставлен', () => {
+    const d = detect(
+      msg({
+        photo: [{ file_id: 'a', file_unique_id: 'a', width: 1, height: 1 }],
+        caption: '1win выкупили лучшую команду мира по Доте',
+      }),
+    );
+    expect(d.url).toBeUndefined();
+  });
+
   it('пересланное фото с подписью — tg_post', () => {
     const d = detect(
       msg({

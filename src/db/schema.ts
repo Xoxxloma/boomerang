@@ -65,6 +65,11 @@ export const items = pgTable(
     description: text('description'), // og:description
     ocrText: text('ocr_text'), // ТОЛЬКО под капотом, не показывать пользователю
     transcript: text('transcript'), // voice / опц. видео
+    // Дочитанное тело статьи по ссылке (readability) — ТОЛЬКО в индекс, как ocr_text/transcript.
+    // bodyStatus: NULL — ещё не пробовали; 'ok' — прочитано; 'unreadable' — заглушка/SPA/пейвол/skip-домен
+    // (кэш отказа: больше не дёргаем + идемпотентность ретрая L2, как гейт !ocrText / !indexedAt).
+    bodyText: text('body_text'),
+    bodyStatus: text('body_status'),
     // Идентификаторы файла в Telegram. Сам файл на диске НЕ храним (хранение ≠ ценность);
     // байты качаем во временный файл по требованию (L2 OCR/чтение документа) и удаляем.
     tgFileId: text('tg_file_id'), // для повторного скачивания через getFile (может протухать со временем)

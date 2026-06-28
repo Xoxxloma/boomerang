@@ -21,6 +21,9 @@ function str(key: string, def: string): string {
 export const tuning = {
   /** Порог семантической похожести в поиске; ниже — отсекаем как нерелевантное (retrieval/search). */
   searchMinSimilarity: num('SEARCH_MIN_SIMILARITY', 0.15),
+  /** Recall-порог: при ПУСТОЙ выдаче делаем второй проход с этим (более низким) порогом — вещь есть
+   *  в архиве, но спросили «не теми словами». Ниже searchMinSimilarity; шум сдерживает лимит+desc. */
+  searchRecallMinSimilarity: num('SEARCH_RECALL_MIN_SIMILARITY', 0.08),
   /** Резонанс (Эхо, PULL) показываем, только если «старому соседу» уже хотя бы столько дней. */
   resonanceMinAgeDays: num('RESONANCE_MIN_AGE_DAYS', 10),
 
@@ -48,6 +51,18 @@ export const tuning = {
   /** Порог item-похожести, ниже которой пара записей не связывается ребром (и не считается резонансом).
    *  Реальная общая нить, а не случайный сосед. Калибруется на корпусе (косинусы на русском низкие). */
   bridgeMinItemSim: num('BRIDGE_MIN_ITEM_SIM', 0.45),
+  /** Сколько «похожих записей» показываем в карточке (бот + Mini App). Порог — bridgeMinItemSim. */
+  similarLimit: num('SIMILAR_LIMIT', 3),
+
+  // --- Дочитывание тела статей по ссылкам (L2, content/article.ts). ---
+  /** Потолок символов извлечённого тела статьи (в индекс/эмбеддинг). Как у документа — фактура размазана. */
+  articleMaxChars: num('ARTICLE_MAX_CHARS', 4000),
+  /** Ниже стольких символов извлечённый текст считаем «не статья» (SPA-оболочка/заглушка/превью) → unreadable. */
+  articleMinChars: num('ARTICLE_MIN_CHARS', 200),
+  /** Таймаут сетевого запроса статьи (мс) — как у OG-скрейпа. */
+  articleFetchTimeoutMs: num('ARTICLE_FETCH_TIMEOUT_MS', 8000),
+  /** Потолок размера ответа статьи (байты, по content-length): больше — не буферизим (защита от OOM). */
+  articleMaxBytes: num('ARTICLE_MAX_BYTES', 5_000_000),
 
   // --- Бюджет-гарды на LLM-расходы (учёт стоимости, потолки, breaker). Цены $/1k токенов. ---
   /** Цена входных токенов LLM $/1k (gpt-4o-mini); СВЕРИТЬ при смене модели в ai/llm.ts. */

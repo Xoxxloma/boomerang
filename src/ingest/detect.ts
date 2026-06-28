@@ -103,18 +103,23 @@ export function detect(msg: Message): Detected {
   if (msg.document) return { type: 'document', text, sourceChat };
   if (msg.voice || msg.audio) return { type: 'voice', text, sourceChat };
 
+  // URL — сигнал для дочитывания статьи в L2, и он НЕ зависит от выбранного type: ссылка бывает и в
+  // подписи к медиа, и в пересланном посте. Извлекаем один раз и проставляем во ВСЕ ветки ниже (тип
+  // при этом не меняем — приоритеты прежние). Дедуп по url не ломается: save передаёт его в
+  // findDuplicateItem только когда у записи нет file_unique_id (медиа дедупится по файлу, как раньше).
+  const url = extractUrl(text, entities) || undefined;
+
   // Фото/видео: ПОДПИСЬ ВАЖНЕЕ МЕДИА. Медиа с содержательной подписью — это в первую очередь пост,
   // классифицируем по подписи (§ продуктовый тезис). Голое медиа без подписи — на медиа-полку.
   const isMedia = Boolean(msg.photo || msg.video || msg.video_note || msg.animation);
   if (isMedia) {
     if (hasMeaningfulCaption(text)) {
-      return { type: isForwarded ? 'tg_post' : 'text', text, sourceChat };
+      return { type: isForwarded ? 'tg_post' : 'text', url, text, sourceChat };
     }
-    if (msg.photo) return { type: 'image', text, sourceChat };
-    return { type: 'video', text, sourceChat }; // video / video_note / animation
+    if (msg.photo) return { type: 'image', url, text, sourceChat };
+    return { type: 'video', url, text, sourceChat }; // video / video_note / animation
   }
 
-  const url = extractUrl(text, entities);
   if (url) return { type: 'link', url, text, sourceChat };
 
   if (isForwarded) return { type: 'tg_post', text, sourceChat };

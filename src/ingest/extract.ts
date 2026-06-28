@@ -3,7 +3,7 @@ import type { Item } from '../db/schema.js';
 /** Поля, из которых собираем индексируемый текст и сигнал для классификации. */
 export type Indexable = Pick<
   Item,
-  'type' | 'url' | 'title' | 'description' | 'rawText' | 'ocrText' | 'transcript' | 'sourceChat'
+  'type' | 'url' | 'title' | 'description' | 'rawText' | 'ocrText' | 'transcript' | 'bodyText' | 'sourceChat'
 >;
 
 /**
@@ -13,7 +13,7 @@ export type Indexable = Pick<
  * по каналу), не часть семантики.
  */
 export function buildIndexText(it: Indexable): string {
-  return [it.title, it.description, it.rawText, it.ocrText, it.transcript, it.url]
+  return [it.title, it.description, it.rawText, it.ocrText, it.transcript, it.bodyText, it.url]
     .filter((s): s is string => Boolean(s && s.trim()))
     .join('\n')
     .trim();
@@ -60,7 +60,8 @@ function nonEmpty(s: string | null | undefined): boolean {
  * Единый предикат для сводки/созревания/классификации: слои не должны расходиться в понимании «пусто».
  */
 export function hasRealContent(it: Indexable): boolean {
-  if (nonEmpty(it.description) || nonEmpty(it.ocrText) || nonEmpty(it.transcript)) return true;
+  if (nonEmpty(it.description) || nonEmpty(it.ocrText) || nonEmpty(it.transcript) || nonEmpty(it.bodyText))
+    return true;
   const raw = it.rawText?.trim() ?? '';
   if (!raw) return false;
   if (it.type === 'link') return raw.replace(/https?:\/\/\S+/g, ' ').trim().length > 0;

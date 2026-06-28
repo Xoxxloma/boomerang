@@ -15,6 +15,7 @@ const base: Indexable = {
   rawText: 'Текст поста',
   ocrText: null,
   transcript: null,
+  bodyText: null,
   sourceChat: null,
 };
 
@@ -150,6 +151,7 @@ describe('hasRealContent', () => {
     rawText: null,
     ocrText: null,
     transcript: null,
+    bodyText: null,
     sourceChat: null,
   };
 
@@ -195,6 +197,7 @@ describe('isContentlessLink', () => {
     rawText: 'https://www.avito.ru/',
     ocrText: null,
     transcript: null,
+    bodyText: null,
     sourceChat: null,
   };
 

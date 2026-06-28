@@ -43,6 +43,10 @@ export interface UpcomingResponse {
   reminders: ReminderDTO[];
 }
 
+export interface SimilarResponse {
+  similar: ItemDTO[];
+}
+
 export type EchoKind = 'on_this_day' | 'resonance';
 export interface EchoCard {
   kind: EchoKind;

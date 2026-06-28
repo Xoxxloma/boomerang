@@ -197,6 +197,19 @@ export async function setOcrText(id: string, ocrText: string): Promise<void> {
 }
 
 /**
+ * Дочитанное тело статьи — только в индекс (как ocrText/transcript). status фиксирует исход:
+ * 'ok' (прочитано) / 'unreadable' (заглушка/SPA/skip-домен) — кэш отказа + идемпотентность ретрая L2
+ * (ветка дочитывания гейтится `bodyStatus == null`). body=null при 'unreadable'.
+ */
+export async function setBodyText(
+  id: string,
+  bodyText: string | null,
+  status: 'ok' | 'unreadable',
+): Promise<void> {
+  await db.update(items).set({ bodyText, bodyStatus: status }).where(eq(items.id, id));
+}
+
+/**
  * Удалить item по запросу пользователя (§ удаление контента) — чтобы бот больше его не учитывал.
  * Проверяем владельца. Возвращает true, если запись существовала и принадлежала пользователю.
  */
@@ -348,6 +361,31 @@ export async function findOlderSibling(
         // даже при нулевой связи (шум). Тот же порог, что у рёбер «Созвездия» — единая «реальная нить».
         sql`1 - (${cosineDistance(items.embedding, queryVec)}) >= ${tuning.bridgeMinItemSim}`,
         sql`${items.createdAt} < now() - (${minAgeDays} || ' days')::interval`,
+      ),
+    )
+    .orderBy(desc(similarity))
+    .limit(limit);
+}
+
+/**
+ * «Похожие записи» для карточки (бот + Mini App): ближайшие по смыслу соседи данной записи — та же
+ * item-kNN нить, что в Карте/резонансе, но БЕЗ возрастного фильтра (findOlderSibling) и от вектора
+ * самой записи. Ассоциативная навигация по архиву: одна запись тянет забытые соседние. Порог
+ * bridgeMinItemSim — реальная связь, а не случайный сосед. У записи без вектора соседей нет → [].
+ */
+export async function listSimilarItems(userId: number, item: Item, limit: number): Promise<Item[]> {
+  if (!item.embedding) return [];
+  const queryVec = item.embedding;
+  const similarity = sql<number>`1 - (${cosineDistance(items.embedding, queryVec)})`;
+  return db
+    .select()
+    .from(items)
+    .where(
+      and(
+        eq(items.userId, userId),
+        ne(items.id, item.id),
+        isNotNull(items.embedding),
+        sql`1 - (${cosineDistance(items.embedding, queryVec)}) >= ${tuning.bridgeMinItemSim}`,
       ),
     )
     .orderBy(desc(similarity))

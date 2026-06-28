@@ -1,5 +1,6 @@
 import { InlineKeyboard, type Bot, type Context } from 'grammy';
-import { getItem, deleteItem, itemDisplayName } from '../../db/items.js';
+import { getItem, deleteItem, itemDisplayName, listSimilarItems } from '../../db/items.js';
+import { tuning } from '../../config/tuning.js';
 import { enqueueProcess } from '../../queue/index.js';
 import { discardEmptyImport, startImport } from '../../import/burst.js';
 import { saveItem, duplicateText } from '../../ingest/save.js';
@@ -29,7 +30,7 @@ const CARD_MAX = 3900;
  *  - ↑ Источник — только для живых пересылок (есть tgMessageId); у импорта его нет → кнопку не шлём;
  *  - всегда удаление и закрытие.
  */
-function cardKeyboard(item: Item): InlineKeyboard {
+function cardKeyboard(item: Item, similar: Item[] = [], expanded = false): InlineKeyboard {
   const kb = new InlineKeyboard();
   if (item.url) kb.url('🔗 Открыть', item.url);
   if (item.tgMessageId) kb.text('↑ Источник', `src:${item.id}`);
@@ -37,8 +38,23 @@ function cardKeyboard(item: Item): InlineKeyboard {
   // Управление записью живёт здесь (а не на сообщении-приёме): напомнить + удалить. Категорий нет —
   // организация по источнику. rem:/delc: уже зарегистрированы.
   kb.text('🪃 Напомнить', `rem:${item.id}`).text('🗑 Удалить', `delc:${item.id}`).row();
+  // «Похожие» — семантически близкие записи (item-kNN, та же нить, что в Карте). Чтобы не раздувать
+  // карточку, по умолчанию это ОДНА кнопка-разворот (sim:); по тапу она раскрывается в 1-3 соседа,
+  // каждый из которых открывается отдельно (card:). Кнопку не показываем, если соседей нет.
+  if (similar.length > 0) {
+    if (expanded) {
+      for (const n of similar) kb.text(`🪐 ${truncate(itemDisplayName(n), 40)}`, `card:${n.id}`).row();
+    } else {
+      kb.text(`🪐 Похожие (${similar.length})`, `sim:${item.id}`).row();
+    }
+  }
   kb.text('✕', 'close');
   return kb;
+}
+
+/** Усечение подписи кнопки-соседа (длинные заголовки переносятся и ломают вид). */
+function truncate(s: string, n: number): string {
+  return s.length > n ? `${s.slice(0, n - 1)}…` : s;
 }
 
 /**
@@ -72,7 +88,7 @@ function imageCaption(item: Item): string | undefined {
  * карточка была пустой — «не видно, что за изображение». Фото нельзя editMessageText, поэтому слот
  * карточки пересоздаём: удаляем прежнюю (любого типа) и шлём фото.
  */
-async function showPhotoCard(ctx: Context, chatId: number, item: Item): Promise<void> {
+async function showPhotoCard(ctx: Context, chatId: number, item: Item, similar: Item[]): Promise<void> {
   const existing = lastCard.get(chatId);
   if (existing != null) {
     await ctx.api.deleteMessage(chatId, existing).catch(() => {});
@@ -81,13 +97,13 @@ async function showPhotoCard(ctx: Context, chatId: number, item: Item): Promise<
   try {
     const sent = await ctx.replyWithPhoto(item.tgFileId!, {
       caption: imageCaption(item),
-      reply_markup: cardKeyboard(item),
+      reply_markup: cardKeyboard(item, similar),
     });
     lastCard.set(chatId, sent.message_id);
   } catch {
     // file_id мог протухнуть (фото не отдаётся) — не оставляем юзера без карточки: шлём текстовый фолбэк.
     const sent = await ctx.reply(renderCard(item), {
-      reply_markup: cardKeyboard(item),
+      reply_markup: cardKeyboard(item, similar),
       link_preview_options: { is_disabled: true as const },
     });
     lastCard.set(chatId, sent.message_id);
@@ -102,13 +118,15 @@ async function showPhotoCard(ctx: Context, chatId: number, item: Item): Promise<
 async function showCard(ctx: Context, item: Item): Promise<void> {
   const chatId = ctx.chat?.id;
   if (chatId == null) return;
+  // Семантические соседи (item-kNN) для блока «Рядом». У записи без вектора вернётся [] — блока нет.
+  const similar = await listSimilarItems(item.userId, item, tuning.similarLimit);
   // Картинку показываем как фото (видно содержимое), остальное — текстовой карточкой.
   if (item.type === 'image' && item.tgFileId) {
-    await showPhotoCard(ctx, chatId, item);
+    await showPhotoCard(ctx, chatId, item, similar);
     return;
   }
   const opts = {
-    reply_markup: cardKeyboard(item),
+    reply_markup: cardKeyboard(item, similar),
     link_preview_options: { is_disabled: true as const },
   };
   const existing = lastCard.get(chatId);
@@ -222,6 +240,23 @@ export function registerCallbacks(bot: Bot): void {
     await ctx.answerCallbackQuery();
   });
 
+  // «🪐 Похожие» в карточке: разворачиваем кнопку-свёртку в 1-3 соседа правкой клавиатуры ТОГО ЖЕ
+  // сообщения (карточка не пересоздаётся). Соседи пересчитываются на клик — актуальны на момент тапа.
+  bot.callbackQuery(/^sim:(.+)$/, async (ctx) => {
+    const itemId = ctx.match[1]!;
+    const item = await getItem(itemId);
+    if (!item || item.userId !== ctx.from.id) {
+      return ctx.answerCallbackQuery({ text: 'Запись не найдена', show_alert: true });
+    }
+    const similar = await listSimilarItems(item.userId, item, tuning.similarLimit);
+    if (similar.length === 0) {
+      // Соседи исчезли (удалены) с момента показа карточки — честно говорим, клавиатуру не трогаем.
+      return ctx.answerCallbackQuery({ text: 'Похожих записей нет' });
+    }
+    await ctx.editMessageReplyMarkup({ reply_markup: cardKeyboard(item, similar, true) }).catch(() => {});
+    await ctx.answerCallbackQuery();
+  });
+
   bot.callbackQuery('close', async (ctx) => {
     await ctx.deleteMessage().catch(() => {});
     // Закрыли отслеживаемую карточку — освобождаем слот (по msgId, чтобы не стереть актуальный).
@@ -296,7 +331,8 @@ export function registerCallbacks(bot: Bot): void {
     const itemId = ctx.match[1]!;
     const item = await getItem(itemId);
     // Запись внезапно пропала — оставляем только закрытие, без мёртвых кнопок.
-    const kb = item ? cardKeyboard(item) : new InlineKeyboard().text('✕', 'close');
+    const similar = item ? await listSimilarItems(item.userId, item, tuning.similarLimit) : [];
+    const kb = item ? cardKeyboard(item, similar) : new InlineKeyboard().text('✕', 'close');
     await ctx.editMessageReplyMarkup({ reply_markup: kb });
     await ctx.answerCallbackQuery();
   });

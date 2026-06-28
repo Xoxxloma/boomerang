@@ -2,13 +2,13 @@ import { createHmac, timingSafeEqual } from 'node:crypto';
 
 /**
  * Чистая проверка подписи Telegram Mini App initData (без env/сети — безопасна в юнит-тестах).
- * Доверять можно ТОЛЬКО подписанному initData: HMAC выводится из BOT_TOKEN, подделать user_id нельзя
+ * Доверие держится ТОЛЬКО на HMAC-подписи: ключ выводится из BOT_TOKEN, подделать user_id нельзя
  * (https://core.telegram.org/bots/webapps#validating-data-received-via-the-mini-app).
+ * Окно свежести по auth_date НЕ проверяем намеренно: WebView кнопки-меню Telegram держится «тёплым»
+ * и переиспользует initData с первого открытия, так что auth_date стареет и любой срок рано или
+ * поздно даёт ложный отказ. Подпись уже гарантирует подлинность; replay поверх TLS — приемлемый риск.
  * Middleware и чтение секрета — в auth.ts (он тянет env, поэтому отделён от этого модуля).
  */
-
-/** Окно свежести initData (сек). Старее — отвергаем: защита от воспроизведения перехваченной строки. */
-export const MAX_AGE_SECONDS = 24 * 60 * 60;
 
 export interface InitDataUser {
   id: number;
@@ -25,13 +25,7 @@ export interface VerifyResult {
   reason?: string;
 }
 
-/** `now` инъектируется для детерминированной проверки окна свежести в юнит-тестах. */
-export function verifyInitData(
-  initData: string,
-  botToken: string,
-  now: number = Date.now(),
-  maxAgeSeconds: number = MAX_AGE_SECONDS,
-): VerifyResult {
+export function verifyInitData(initData: string, botToken: string): VerifyResult {
   if (!initData) return { ok: false, reason: 'empty' };
 
   const params = new URLSearchParams(initData);
@@ -54,11 +48,6 @@ export function verifyInitData(
   const a = Buffer.from(computed, 'hex');
   const b = Buffer.from(hash, 'hex');
   if (a.length !== b.length || !timingSafeEqual(a, b)) return { ok: false, reason: 'bad-hash' };
-
-  // Свежесть: auth_date в секундах эпохи.
-  const authDate = Number(params.get('auth_date'));
-  if (!Number.isFinite(authDate)) return { ok: false, reason: 'no-auth-date' };
-  if (now / 1000 - authDate > maxAgeSeconds) return { ok: false, reason: 'expired' };
 
   // Личность.
   let user: InitDataUser;

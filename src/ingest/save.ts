@@ -54,7 +54,12 @@ export async function saveItem(
 
   // Дедуп ДО вставки (§ тезис): тот же пост уже сохранён → не задваиваем, возвращаем существующий.
   // Приоритет ключа — как в балк-дедупе: url → file_unique_id → нормализованный текст.
-  const dup = await findDuplicateItem(userId, { url: det.url, fileUid: tgFileUniqueId, text: det.text });
+  // url берём КЛЮЧОМ дедупа только для настоящей ссылки-поста (type 'link'). У медиа-с-подписью
+  // det.url теперь тоже бывает (ссылка в подписи — для дочитывания статьи в L2), но идентичность такой
+  // записи — это файл/подпись, не url: иначе два разных фото с одной ссылкой-подписью схлопнулись бы.
+  // Так дедуп для всех НЕ-link типов остаётся ровно прежним (file_unique_id → текст).
+  const dedupUrl = det.type === 'link' ? det.url : undefined;
+  const dup = await findDuplicateItem(userId, { url: dedupUrl, fileUid: tgFileUniqueId, text: det.text });
   if (dup) {
     return { item: dup, duplicate: true };
   }
