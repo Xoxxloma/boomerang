@@ -23,9 +23,9 @@ export function EchoScreen({ onOpenItem }: { onOpenItem: (it: ItemDTO) => void }
   return (
     <div className="screen screen-pad-top">
       <h1 className="display">Возвращается</h1>
-      <p className="lede">Накопленное само всплывает наверх — то, к чему стоит вернуться сегодня.</p>
+      <p className="lede">То, к чему можно вернуться сегодня.</p>
 
-      {status === 'loading' && <BeamLoader label="смотрю, что притягивается…" />}
+      {status === 'loading' && <BeamLoader label="собираю ленту…" />}
 
       {status === 'error' && (
         <p className="body" style={{ color: 'var(--muted)' }}>
@@ -36,8 +36,8 @@ export function EchoScreen({ onOpenItem }: { onOpenItem: (it: ItemDTO) => void }
       {status === 'done' && cards && cards.length === 0 && (
         <EmptyState
           glyph="🪃"
-          title="Пока тихо"
-          hint="Когда накопится материал, сюда сами начнут возвращаться темы, годовщины и переклички."
+          title="Пока пусто"
+          hint="Когда накопится материал, тут появятся годовщины и переклички записей."
         />
       )}
 
@@ -89,7 +89,7 @@ function EchoCardView({
         <div className="echo-headline">{old.name}</div>
         <div className="echo-pair">
           <IconBoomerang style={{ width: 16, height: 16, color: 'var(--accent)', flex: 'none' }} />
-          <span className="meta">недавно ты сохранил «{card.item.name}»</span>
+          <span className="meta">недавно сохранено «{card.item.name}»</span>
         </div>
       </button>
     );

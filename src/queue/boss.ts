@@ -9,6 +9,8 @@ export const Q_BURST_FLUSH = 'l2-burst-flush';
 export const Q_PROCESS_DLQ = 'l2-process-dlq';
 /** Cron-sweep напоминаний: раз в минуту забираем созревшие (remind_at <= now) и доставляем. */
 export const Q_REMIND_SWEEP = 'reminders-sweep';
+/** Cron-sweep окончания Pro-доступа: периодически шлём напоминания d3/d1/d0 по entitlements.activeUntil. */
+export const Q_ACCESS_REMIND_SWEEP = 'access-reminders-sweep';
 
 let boss: PgBoss | null = null;
 
@@ -35,9 +37,12 @@ export async function startBoss(): Promise<PgBoss> {
   await b.createQueue(Q_FLUSH_ALBUM);
   await b.createQueue(Q_BURST_FLUSH);
   await b.createQueue(Q_REMIND_SWEEP);
+  await b.createQueue(Q_ACCESS_REMIND_SWEEP);
   // Раз в минуту кладём пустую задачу в Q_REMIND_SWEEP — воркер забирает созревшие напоминания из БД.
   // Идемпотентно по имени очереди: повторный schedule на старте просто обновляет расписание.
   await b.schedule(Q_REMIND_SWEEP, '* * * * *');
+  // Напоминания об окончании Pro — раз в 15 минут (точности «по факту окончания» до 15 мин достаточно).
+  await b.schedule(Q_ACCESS_REMIND_SWEEP, '*/15 * * * *');
   return b;
 }
 

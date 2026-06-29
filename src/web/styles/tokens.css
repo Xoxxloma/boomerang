@@ -2,7 +2,7 @@
  * Boomerang Mini App — дизайн-токены (проработаны через impeccable).
  * Метафора: созвездие/орбита. Тёплое/холодное двуединство — смысловая система, не декор:
  *   холодный --star (teal) = накопленное/хранение, тёплый --beam (amber) = извлечение/возврат.
- * Тема переключается атрибутом [data-theme] из Telegram color_scheme. Карта всегда «космос».
+ * Единая тёмная тема (космос несёт бренд) — color_scheme клиента не учитываем. Карта всегда «космос».
  */
 
 :root {
@@ -54,7 +54,7 @@
   --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
 }
 
-/* Тёмная тема (по умолчанию) — космос несёт бренд. */
+/* Единая тёмная тема — космос несёт бренд. [data-theme='dark'] всегда ставит telegram.ts. */
 :root,
 [data-theme='dark'] {
   color-scheme: dark;
@@ -68,19 +68,4 @@
   --accent-soft: var(--star-dim);
   --link: var(--star);
   --scrim: oklch(0.1 0.02 275 / 0.62);
-}
-
-/* Светлая тема — чистый нативный хром; бренд несут beam/star + типографика. */
-[data-theme='light'] {
-  color-scheme: light;
-  --bg: oklch(1 0 0);
-  --surface: oklch(0.978 0.004 255);
-  --surface-2: oklch(0.955 0.006 255);
-  --hairline: oklch(0.9 0.006 260);
-  --ink: oklch(0.2 0.02 270);
-  --muted: oklch(0.49 0.018 260);
-  --accent: oklch(0.55 0.11 200); /* читаемый холодный акцент на белом */
-  --accent-soft: oklch(0.55 0.11 200 / 0.1);
-  --link: oklch(0.52 0.12 235);
-  --scrim: oklch(0.2 0.02 270 / 0.38);
 }

@@ -11,7 +11,11 @@ import { registerBrowse } from './handlers/browse.js';
 import { registerIngest } from './handlers/ingest.js';
 import { registerReminders } from './handlers/reminders.js';
 import { registerSupport } from './handlers/support.js';
+import { registerPlans } from './handlers/plans.js';
+import { registerAdmin } from './handlers/admin.js';
+import { registerPayments } from './handlers/payments.js';
 import { searchReplyKeyboard } from './handlers/search.js';
+import { notifyAdmins } from './alerts.js';
 
 export function createBot(): Bot {
   const bot = new Bot(env.BOT_TOKEN);
@@ -57,6 +61,9 @@ export function createBot(): Bot {
   });
 
   registerCommands(bot);
+  // Тарифы Pro (/premium) и админ-рефанд — команды, конфликта с приёмом нет.
+  registerPlans(bot);
+  registerAdmin(bot);
   registerBrowse(bot);
   registerCallbacks(bot);
   // Поиск регистрируем ДО приёма: вопрос-запрос должен перехватываться раньше,
@@ -68,10 +75,28 @@ export function createBot(): Bot {
   // Поддержка — ПОСЛЕ поиска/напоминаний, ДО приёма: ловит ответ на /help и реплай админа,
   // на остальном message:text делает next() → обычный текст уходит в ingest как раньше.
   registerSupport(bot);
+  // Платежи СТРОГО до приёма: successful_payment — служебное сообщение без текста, иначе упало бы в
+  // ingest (catch-all bot.on('message')) и уперлось бы в гейт ёмкости.
+  registerPayments(bot);
   registerIngest(bot);
 
+  // Необработанное исключение хендлера: grammY-runner ловит его сюда — процесс НЕ падает, но юзер
+  // остаётся с зависшим ack. console.error на зарубежном VPS никто не видит → дублируем в notifyAdmins
+  // (троттл по типу апдейта + классу ошибки, чтобы шквал одной поломки не зафлудил чат админов).
   bot.catch((err) => {
     console.error('❌ Bot error:', err.error);
+    const cause = err.error;
+    const name = cause instanceof Error ? cause.name : typeof cause;
+    const detail = cause instanceof Error ? cause.message : String(cause);
+    const updType = err.ctx.update.message
+      ? 'message'
+      : err.ctx.update.callback_query
+        ? 'callback'
+        : 'update';
+    void notifyAdmins(
+      `bot-handler:${updType}:${name}`,
+      `❌ Сбой обработки ${updType} от ${err.ctx.from?.id ?? '?'}: ${name}: ${detail.slice(0, 300)}`,
+    );
   });
 
   return bot;

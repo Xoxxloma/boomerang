@@ -100,4 +100,22 @@ export const tuning = {
   globalDailySoftLimitUsd: num('GLOBAL_DAILY_SOFT_LIMIT_USD', 5),
   /** Жёсткий общий дневной порог ($): выше — paused (стоп всему). */
   globalDailyHardLimitUsd: num('GLOBAL_DAILY_HARD_LIMIT_USD', 10),
+
+  // --- Монетизация (Telegram Stars): единственный гейт — ёмкость базы (billing/*). ---
+  /** Потолок числа записей на бесплатном тарифе. Pro — безлимит. Превышение → приём блокируется с CTA. */
+  freeArchiveCap: num('FREE_ARCHIVE_CAP', 100),
+  /** Длительность приветственного триала Pro (сек) — выдаётся один раз в ensureUser. 30 дней. */
+  trialDurationSec: num('TRIAL_DURATION_SEC', 2592000),
+  /** Цены разовых пассов (⭐, валюта XTR) без авто-продления. */
+  starsPass1mPrice: num('STARS_PASS_1M_PRICE', 129),
+  starsPass3mPrice: num('STARS_PASS_3M_PRICE', 329),
+  starsPass6mPrice: num('STARS_PASS_6M_PRICE', 629),
+  starsPass12mPrice: num('STARS_PASS_12M_PRICE', 1199),
+  /** Длительность пассов (сек): 30 / 90 / 180 / 365 дней. */
+  starsPass1mDurationSec: num('STARS_PASS_1M_DURATION_SEC', 2592000),
+  starsPass3mDurationSec: num('STARS_PASS_3M_DURATION_SEC', 7776000),
+  starsPass6mDurationSec: num('STARS_PASS_6M_DURATION_SEC', 15552000),
+  starsPass12mDurationSec: num('STARS_PASS_12M_DURATION_SEC', 31536000),
+  /** Макс. напоминаний об окончании доступа за один тик свипа (access-reminders-sweep). */
+  accessRemindSweepBatch: num('ACCESS_REMIND_SWEEP_BATCH', 100),
 } as const;

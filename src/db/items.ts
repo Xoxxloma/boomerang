@@ -55,6 +55,15 @@ export async function itemsBySelfUploadPage(
   return { items: rows, total: c?.total ?? 0 };
 }
 
+/** Всего записей юзера — для гейта ёмкости free-тарифа (billing/capacity). Дёшево (индекс items_user_idx). */
+export async function countUserItems(userId: number): Promise<number> {
+  const [c] = await db
+    .select({ total: sql<number>`count(*)::int` })
+    .from(items)
+    .where(eq(items.userId, userId));
+  return c?.total ?? 0;
+}
+
 export async function insertItem(values: NewItem): Promise<Item> {
   const [row] = await db.insert(items).values(values).returning();
   if (!row) throw new Error('insertItem: пустой результат');

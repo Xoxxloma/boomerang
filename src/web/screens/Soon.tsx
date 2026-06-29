@@ -47,7 +47,7 @@ export function SoonScreen({ onOpenItem }: { onOpenItem: (it: ItemDTO) => void }
   return (
     <div className="screen screen-pad-top">
       <h1 className="display">Скоро вернётся</h1>
-      <p className="lede">Что ты сам попросил вернуть — и когда. Можно перенести, отменить или вернуть сейчас.</p>
+      <p className="lede">Что вернётся по твоим напоминаниям — и когда. Можно перенести, отменить или вернуть сейчас.</p>
 
       {status === 'loading' && <BeamLoader label="смотрю, что на подходе…" />}
 

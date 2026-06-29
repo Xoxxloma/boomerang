@@ -68,7 +68,7 @@ export async function handleQuery(ctx: Context, query: string): Promise<void> {
   if (!budget.allowed) {
     await ctx.reply(
       budget.reason === 'user'
-        ? `Ты исчерпал дневной лимит запросов. Обновится в ${formatResetUtc(budget.resetsAt)}.`
+        ? `Дневной лимит исчерпан. Обновится в ${formatResetUtc(budget.resetsAt)}.`
         : 'Поиск временно недоступен из-за нагрузки — попробуй позже.',
     );
     return;

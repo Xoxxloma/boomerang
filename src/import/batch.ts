@@ -5,6 +5,7 @@ import { embedBatch } from '../ai/embeddings.js';
 import { QuotaExceededError, BudgetExhaustedError } from '../ai/errors.js';
 import { buildIndexText, type Indexable } from '../ingest/extract.js';
 import { enqueueProcess } from '../queue/index.js';
+import { remainingSlots } from '../billing/capacity.js';
 
 /** Страховка от мегаархивов: больше не обрабатываем за один заход (лог при урезании). */
 const MAX_ITEMS = 20000;
@@ -39,6 +40,11 @@ export interface BatchResult {
   stoppedForBudget?: boolean;
   /** Флаш отложен (альбомы ещё оседали) — буфер/сессия целы, дольём коротким добором. Не финальный итог. */
   deferred?: boolean;
+  /**
+   * Сколько записей не влезло в потолок free-тарифа (гейт ёмкости): дедуп/шум прошли, но места нет.
+   * Сигнал показать CTA на Pro. Pro/триал → 0 (безлимит). См. billing/capacity.
+   */
+  cappedOut?: number;
 }
 
 export type ProgressFn = (done: number, total: number) => Promise<void> | void;
@@ -158,8 +164,19 @@ export async function batchIngest(userId: number, drafts: Draft[], onProgress?: 
   const dupeInfo = { existingDupes, inBatchDupes, existingDupeCount, inBatchDupeCount };
 
   const skipped = total - pool.length;
+
+  // Гейт ёмкости для импорта: режем пачку под остаток free-тарифа. Pro/триал → remaining=Infinity (без
+  // среза). Срезанное не теряется в БД — остаётся у юзера в «Избранном», дольёт после апгрейда; здесь
+  // сообщаем cappedOut. Считаем ПОСЛЕ дедупа/шума (capped — это реальные новые записи).
+  const remaining = await remainingSlots(userId);
+  let cappedOut = 0;
+  if (pool.length > remaining) {
+    cappedOut = pool.length - remaining;
+    pool = pool.slice(0, Math.max(0, remaining));
+  }
+
   if (pool.length === 0) {
-    return { saved: 0, images: 0, skipped, ...dupeInfo };
+    return { saved: 0, images: 0, skipped, cappedOut, ...dupeInfo };
   }
 
   // Эмбеддинги считаем ДО вставки: это самый дорогой и сетевой шаг (OpenAI через VPN нестабилен).
@@ -199,7 +216,7 @@ export async function batchIngest(userId: number, drafts: Draft[], onProgress?: 
   if (processedCount < pool.length) pool = pool.slice(0, processedCount);
   if (pool.length === 0) {
     // Лимит исчерпан на первом же чанке — ничего не векторизовали, вставлять нечего.
-    return { saved: 0, images: 0, skipped, stoppedForBudget, ...dupeInfo };
+    return { saved: 0, images: 0, skipped, stoppedForBudget, cappedOut, ...dupeInfo };
   }
 
   // Вставка с уже готовым эмбеддингом одним полем (indexedAt — раз вектор есть, L2 для текста не нужен).
@@ -227,5 +244,5 @@ export async function batchIngest(userId: number, drafts: Draft[], onProgress?: 
     if (it.tgFileId) await enqueueProcess(it.id);
   }
 
-  return { saved: inserted.length, images: imageItems.length, skipped, stoppedForBudget, ...dupeInfo };
+  return { saved: inserted.length, images: imageItems.length, skipped, stoppedForBudget, cappedOut, ...dupeInfo };
 }

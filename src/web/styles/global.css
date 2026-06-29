@@ -54,6 +54,21 @@ a {
   padding: var(--s4) var(--s4) calc(var(--s16) + env(safe-area-inset-bottom));
 }
 
+/* Индикатор ёмкости базы (free-тариф). Тонкая полоса под статус-баром; при заполнении — акцент. */
+.cap-badge {
+  flex: 0 0 auto;
+  padding: calc(var(--s2) / 2) var(--s4);
+  padding-top: calc(var(--s2) / 2 + env(safe-area-inset-top));
+  font-size: 0.8rem;
+  color: var(--muted);
+  text-align: center;
+}
+
+.cap-badge--full {
+  color: var(--ink);
+  background: var(--accent-soft);
+}
+
 .screen-pad-top {
   padding-top: calc(var(--s4) + env(safe-area-inset-top));
 }

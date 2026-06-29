@@ -1,11 +1,38 @@
-import { lazy, Suspense, useState } from 'react';
-import type { ItemDTO } from './lib/types.js';
+import { lazy, Suspense, useEffect, useState } from 'react';
+import type { ItemDTO, EntitlementResponse } from './lib/types.js';
+import { api } from './lib/api.js';
 import { TabBar, type Tab } from './components/TabBar.js';
 import { SearchScreen } from './screens/Search.js';
 import { EchoScreen } from './screens/Echo.js';
 import { SoonScreen } from './screens/Soon.js';
 import { ItemSheet } from './components/ItemSheet.js';
 import { BeamLoader } from './components/States.js';
+
+/**
+ * Индикатор аккаунта/ёмкости базы (§ монетизация). Pro → «♾ Pro · N записей»; free → «N/limit» с CTA
+ * при заполнении. Покупка/отмена идут через бота (Stars), поэтому при заполнении отсылаем в чат к /premium.
+ */
+function CapacityBadge() {
+  const [ent, setEnt] = useState<EntitlementResponse | null>(null);
+  useEffect(() => {
+    api.entitlement().then(setEnt).catch(() => {});
+  }, []);
+  if (!ent) return null;
+  const { used, limit } = ent.capacity;
+
+  // Pro / безлимит: показываем счётчик без потолка.
+  if (ent.tier === 'pro' || limit == null) {
+    return <div className="cap-badge">♾ Pro · {used} записей</div>;
+  }
+
+  const full = used >= limit;
+  return (
+    <div className={`cap-badge${full ? ' cap-badge--full' : ''}`}>
+      🗄 {used}/{limit}
+      {full ? ' — хранилище заполнено, открой Pro в чате (/premium)' : ''}
+    </div>
+  );
+}
 
 // bundle-dynamic-imports: тяжёлый react-force-graph (бóльшая часть бандла) нужен только на вкладке
 // Карта, а дефолтная вкладка — Эхо. Грузим экран Карты отдельным чанком по требованию.
@@ -19,6 +46,7 @@ export function App() {
 
   return (
     <div className="app-shell">
+      <CapacityBadge />
       {tab === 'echo' && <EchoScreen onOpenItem={openItem} />}
       {tab === 'soon' && <SoonScreen onOpenItem={openItem} />}
       {tab === 'search' && <SearchScreen onOpenItem={openItem} />}

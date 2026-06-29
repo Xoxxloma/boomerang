@@ -6,6 +6,7 @@ import { fetchLinkMeta, hostnameOf } from '../content/og.js';
 import { insertItem, findItemByTgMessageId, findDuplicateItem, groupsAlreadyPosted } from '../db/items.js';
 import { getReminderSettings, setReminder } from '../db/reminders.js';
 import { enqueueProcess, type AckRef } from '../queue/index.js';
+import { getCapacity, CapacityError } from '../billing/capacity.js';
 import type { Item, NewItem } from '../db/schema.js';
 
 /**
@@ -64,6 +65,12 @@ export async function saveItem(
     return { item: dup, duplicate: true };
   }
 
+  // Гейт ёмкости (единственная платная стена) — ПОСЛЕ дедупа (дубль не растит базу), но ДО дорогого
+  // OG-fetch и вставки. Единая точка для всех путей приёма (одиночный/fork/альбом); импорт-балк
+  // капается отдельно (batch.ts). Гонок нет — приём сериализован per-user (bot sequentialize).
+  const cap = await getCapacity(userId);
+  if (!cap.canAdd) throw new CapacityError(cap.used, cap.limit);
+
   if (det.type === 'link' && det.url) {
     const meta = await fetchLinkMeta(det.url); // title + OG, тело НЕ читаем
     // Нет вменяемого title (анти-бот сайт отдал заглушку → meta пуста) → фолбэк на хост (avito.ru):
@@ -108,7 +115,7 @@ export async function saveItem(
 /** Текст-подтверждение для уже сохранённого поста (дубль): заголовок, если известен. */
 export function duplicateText(item: Item): string {
   const name = item.title ? ` — «${truncate(item.title, 80)}»` : '';
-  return `Это уже в Бумеранге${name}. Повторно не добавил.`;
+  return `Это уже в Boomerang${name}. Повторно не добавил.`;
 }
 
 /** Финальный статус приёма: «✅ Принял — «заголовок»» (если есть title) или просто «✅ Принял». */
@@ -135,9 +142,17 @@ export async function flushAlbumMessages(
     if (existing) {
       text = `✅ Уже сохранил${existing.title ? ` — ${truncate(existing.title, 80)}` : ''}`;
     } else {
-      const { item, duplicate } = await saveItem(api, captionMsg.from.id, captionMsg);
-      // Тот же контент другим message_id (мимо findItemByTgMessageId) → дубль: не задвоили, сообщаем.
-      text = duplicate ? duplicateText(item) : acceptedText(item);
+      try {
+        const { item, duplicate } = await saveItem(api, captionMsg.from.id, captionMsg);
+        // Тот же контент другим message_id (мимо findItemByTgMessageId) → дубль: не задвоили, сообщаем.
+        text = duplicate ? duplicateText(item) : acceptedText(item);
+      } catch (err) {
+        if (err instanceof CapacityError) {
+          await api.editMessageText(ackChatId, ackMessageId, capacityFullText(err.used, err.limit)).catch(() => {});
+          return;
+        }
+        throw err;
+      }
     }
     // Правка ack — best-effort: её падение (протухшее/изменённое сообщение) не должно ронять флаш
     // и гонять ретрай (он бы задвоил уже сохранённое). Без кнопок: управление записью — в карточке
@@ -161,7 +176,19 @@ export async function flushAlbumMessages(
   for (const m of messages) {
     if (!m.from) continue;
     if (!(await findItemByTgMessageId(m.from.id, m.message_id))) {
-      await saveItem(api, m.from.id, m);
+      try {
+        await saveItem(api, m.from.id, m);
+      } catch (err) {
+        // База заполнилась посреди альбома: сохранённые члены остаются, остаток режем с честным CTA.
+        if (err instanceof CapacityError) {
+          const tail = capacityFullText(err.used, err.limit);
+          await api
+            .editMessageText(ackChatId, ackMessageId, `✅ Принял ${n} медиа. ${tail}`)
+            .catch(() => {});
+          return;
+        }
+        throw err;
+      }
     }
     n += 1;
   }
@@ -170,4 +197,9 @@ export async function flushAlbumMessages(
 
 function truncate(s: string, n: number): string {
   return s.length > n ? s.slice(0, n - 1) + '…' : s;
+}
+
+/** Короткий текст «база заполнена» для правки ack альбома (без кнопок — путь редкий). CTA — /premium. */
+function capacityFullText(used: number, limit: number): string {
+  return `🗄 Хранилище заполнено — ${used}/${limit}. Дальше — Boomerang Pro (безлимит): /premium`;
 }

@@ -5,6 +5,8 @@ import { saveItem, duplicateText } from '../../ingest/save.js';
 import { maybeBufferBurst } from '../../import/burst.js';
 import { isExportDocument, handleExport } from '../../import/export.js';
 import { duplicateKeyboard } from './callbacks.js';
+import { CapacityError } from '../../billing/capacity.js';
+import { capacityFullMessage } from './plans.js';
 
 /**
  * Приём контента — Level 1 (синхронно, §5):
@@ -13,6 +15,10 @@ import { duplicateKeyboard } from './callbacks.js';
  */
 export function registerIngest(bot: Bot): void {
   bot.on('message', async (ctx) => {
+    // Служебное сообщение об оплате обрабатывает registerPayments (зарегистрирован раньше и не зовёт
+    // next()). Защитный ранний выход — на случай изменения порядка: оно без текста и упёрлось бы в гейт.
+    if (ctx.message.successful_payment) return;
+
     const rawText = ctx.message.text ?? ctx.message.caption ?? '';
     if (rawText.startsWith('/')) return; // команды — отдельно
 
@@ -46,7 +52,7 @@ export function registerIngest(bot: Bot): void {
       return;
     }
 
-    const ack = await ctx.reply('Принял ✅', {
+    const ack = await ctx.reply('✅ Принял', {
       reply_parameters: { message_id: ctx.message.message_id },
     });
 
@@ -74,6 +80,15 @@ export function registerIngest(bot: Bot): void {
         );
       }
     } catch (err) {
+      // База заполнена (free-тариф) → правим ack на CTA вместо «принял». Дубли сюда не попадают
+      // (saveItem проверяет ёмкость уже после дедупа), поэтому повторная пересылка покажется как обычно.
+      if (err instanceof CapacityError) {
+        const { text, reply_markup } = capacityFullMessage(err.used, err.limit);
+        await ctx.api
+          .editMessageText(ack.chat.id, ack.message_id, text, { parse_mode: 'Markdown', reply_markup })
+          .catch(() => {});
+        return;
+      }
       console.error('ingest error:', err);
       await ctx.api
         .editMessageText(ack.chat.id, ack.message_id, '✅ Принял (доиндексирую чуть позже)')

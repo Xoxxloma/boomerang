@@ -144,7 +144,7 @@ export async function reapEmptyImport(api: Api, userId: number): Promise<void> {
       api,
       s.progressChatId,
       s.progressMessageId,
-      'Режим заливки выключен — ничего не пришло. Набери /import, когда будешь готов.',
+      'Режим заливки выключен — ничего не пришло. Набери /import, когда понадобится.',
     );
   }
 }
@@ -243,6 +243,9 @@ function addResult(acc: BatchResult, r: BatchResult): BatchResult {
     existingDupes: [...acc.existingDupes, ...r.existingDupes].slice(0, DUPE_SAMPLE_CAP),
     inBatchDupes: [...acc.inBatchDupes, ...r.inBatchDupes].slice(0, DUPE_SAMPLE_CAP),
     stoppedForBudget: acc.stoppedForBudget || r.stoppedForBudget,
+    // Срез по ёмкости копим по волнам: иначе многоволновой импорт молча терял бы CTA «не влезло → Pro»
+    // (finalText читает суммарный total). Ёмкость — единственная платная стена, сигнал ронять нельзя.
+    cappedOut: (acc.cappedOut ?? 0) + (r.cappedOut ?? 0),
   };
 }
 

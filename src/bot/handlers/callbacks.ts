@@ -4,6 +4,8 @@ import { tuning } from '../../config/tuning.js';
 import { enqueueProcess } from '../../queue/index.js';
 import { discardEmptyImport, startImport } from '../../import/burst.js';
 import { saveItem, duplicateText } from '../../ingest/save.js';
+import { CapacityError } from '../../billing/capacity.js';
+import { capacityFullMessage } from './plans.js';
 import { handleQuery } from './search.js';
 import type { Item } from '../../db/schema.js';
 
@@ -176,9 +178,19 @@ export function registerCallbacks(bot: Bot): void {
     // detectReminder:true — «напомни …» ловится тем же дешёвым вызовом, как при обычном приёме.
     await ctx.editMessageText('🔖 Принял, обрабатываю…').catch(() => {});
     const ackRef = { chatId, messageId: cbMsg.message_id };
-    const { item, duplicate } = await saveItem(ctx.api, ctx.from.id, original, ackRef, {
-      detectReminder: true,
-    });
+    let saved;
+    try {
+      saved = await saveItem(ctx.api, ctx.from.id, original, ackRef, { detectReminder: true });
+    } catch (err) {
+      // База заполнена (free) → CTA вместо сохранения.
+      if (err instanceof CapacityError) {
+        const { text, reply_markup } = capacityFullMessage(err.used, err.limit);
+        await ctx.editMessageText(text, { parse_mode: 'Markdown', reply_markup }).catch(() => {});
+        return ctx.answerCallbackQuery();
+      }
+      throw err;
+    }
+    const { item, duplicate } = saved;
     if (duplicate) {
       await ctx
         .editMessageText(duplicateText(item), { reply_markup: duplicateKeyboard(item) })
@@ -282,7 +294,7 @@ export function registerCallbacks(bot: Bot): void {
     const cancelled = await discardEmptyImport(ctx.from.id);
     await ctx.answerCallbackQuery({ text: cancelled ? 'Заливка отменена' : 'Файлы уже пошли — заканчиваю' });
     if (cancelled) {
-      await ctx.editMessageText('Заливка отменена. Набери /import, когда будешь готов.').catch(() => {});
+      await ctx.editMessageText('Заливка отменена. Набери /import, когда понадобится.').catch(() => {});
     }
   });
 

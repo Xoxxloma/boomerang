@@ -11,6 +11,7 @@ import {
   timestamp,
   vector,
   index,
+  uniqueIndex,
   primaryKey,
   date,
   numeric,
@@ -180,3 +181,71 @@ export const usageDaily = pgTable(
   },
   (t) => [primaryKey({ columns: [t.userId, t.day] })],
 );
+
+/** Эффективный тариф юзера. Источник истины «Pro» — entitlements.activeUntil > now() (см. billing/entitlement). */
+export const entitlementTier = pgEnum('entitlement_tier', ['free', 'pro']);
+/** Чем выдан текущий Pro-доступ: триал, нативная подписка, разовый пасс. */
+export const entitlementSource = pgEnum('entitlement_source', ['trial', 'subscription', 'pass']);
+
+/**
+ * Источник истины «Pro» — 1 строка на юзера (§ монетизация по ёмкости базы). Эффективный тариф
+ * ВЫВОДИТСЯ из activeUntil > now() (лениво, без крона): NULL/прошлое = free, будущее = pro.
+ * tier хранится для отладки/выборок, но решает activeUntil. Гранты атомарны (UPSERT с GREATEST),
+ * триал выдаётся один раз (ON CONFLICT DO NOTHING).
+ */
+export const entitlements = pgTable('entitlements', {
+  userId: bigint('user_id', { mode: 'number' }).primaryKey(), // tg user id, 1:1 с users.id
+  tier: entitlementTier('tier').default('free').notNull(),
+  activeUntil: timestamp('active_until', { withTimezone: true }), // NULL = доступа не было
+  source: entitlementSource('source'),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+});
+
+/**
+ * Неизменяемый журнал платежей Telegram Stars + ключ идемпотентности. Вебхук successful_payment
+ * Telegram ретраит — дедуп по telegram_payment_charge_id (UNIQUE): грант выдаётся только при выигранном
+ * INSERT ... ON CONFLICT DO NOTHING RETURNING. Хранит окно, на которое выдан доступ, и факт рефанда.
+ */
+export const payments = pgTable(
+  'payments',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: bigint('user_id', { mode: 'number' }).notNull(),
+    telegramPaymentChargeId: text('telegram_payment_charge_id').notNull(),
+    providerPaymentChargeId: text('provider_payment_charge_id'),
+    product: text('product').notNull(), // ProductKey из billing/plans
+    starsAmount: integer('stars_amount').notNull(), // total_amount в XTR
+    invoicePayload: text('invoice_payload').notNull(),
+    isRecurring: boolean('is_recurring').default(false).notNull(),
+    isFirstRecurring: boolean('is_first_recurring').default(false).notNull(),
+    grantedFrom: timestamp('granted_from', { withTimezone: true }).notNull(),
+    grantedUntil: timestamp('granted_until', { withTimezone: true }).notNull(),
+    refundedAt: timestamp('refunded_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => [
+    uniqueIndex('payments_charge_uq').on(t.telegramPaymentChargeId),
+    index('payments_user_idx').on(t.userId),
+  ],
+);
+
+export type Entitlement = typeof entitlements.$inferSelect;
+export type Payment = typeof payments.$inferSelect;
+
+/**
+ * Дедуп отправленных напоминаний об окончании доступа. Ключ (user_id, active_until, kind) UNIQUE:
+ * каждое окно доступа (activeUntil) получает свой комплект напоминаний d3/d1/d0 ровно по разу
+ * (claim через INSERT ... ON CONFLICT DO NOTHING). Продление двигает activeUntil → свежее окно.
+ */
+export const accessReminders = pgTable(
+  'access_reminders',
+  {
+    userId: bigint('user_id', { mode: 'number' }).notNull(),
+    activeUntil: timestamp('active_until', { withTimezone: true }).notNull(),
+    kind: text('kind').notNull(), // 'd3' | 'd1' | 'd0'
+    sentAt: timestamp('sent_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => [uniqueIndex('access_reminders_uq').on(t.userId, t.activeUntil, t.kind)],
+);
+
+export type AccessReminder = typeof accessReminders.$inferSelect;

@@ -1,5 +1,13 @@
 import { InlineKeyboard } from 'grammy';
-import { getBoss, Q_PROCESS, Q_FLUSH_ALBUM, Q_BURST_FLUSH, Q_PROCESS_DLQ, Q_REMIND_SWEEP } from './boss.js';
+import {
+  getBoss,
+  Q_PROCESS,
+  Q_FLUSH_ALBUM,
+  Q_BURST_FLUSH,
+  Q_PROCESS_DLQ,
+  Q_REMIND_SWEEP,
+  Q_ACCESS_REMIND_SWEEP,
+} from './boss.js';
 import type { ProcessJob, FlushAlbumJob, BurstFlushJob } from './index.js';
 import { processItem, type ProcessResult } from './jobs/process.js';
 import { flushAlbum, notifyAlbumFlushFailed } from '../ingest/album.js';
@@ -12,6 +20,7 @@ import { QuotaExceededError, BudgetExhaustedError } from '../ai/errors.js';
 import { formatResetUtc } from '../ai/usage.js';
 import { claimDueReminders, getReminderSettings } from '../db/reminders.js';
 import { deliverReminder } from '../reminders/deliver.js';
+import { sweepAccessReminders } from '../reminders/access.js';
 import { formatRemindAt } from '../reminders/format.js';
 import { tuning } from '../config/tuning.js';
 import type { Item } from '../db/schema.js';
@@ -188,6 +197,12 @@ export async function startWorkers(): Promise<void> {
     for (const item of due) {
       await deliverReminder(item);
     }
+  });
+
+  // Sweep окончания Pro-доступа: 15-мин cron кладёт пустую задачу — рассылаем напоминания d3/d1/d0
+  // по истекающим entitlements.activeUntil (claim в access_reminders → без дублей). batchSize:1 — тик лёгкий.
+  await boss.work(Q_ACCESS_REMIND_SWEEP, { batchSize: 1 }, async () => {
+    await sweepAccessReminders(new Date());
   });
 
   console.log('🛠  L2-воркеры запущены');

@@ -1,5 +1,12 @@
 import { getInitData } from './telegram.js';
-import type { SearchResponse, MapResponse, EchoResponse, UpcomingResponse, SimilarResponse } from './types.js';
+import type {
+  SearchResponse,
+  MapResponse,
+  EchoResponse,
+  UpcomingResponse,
+  SimilarResponse,
+  EntitlementResponse,
+} from './types.js';
 
 /** Ошибка API с кодом статуса — экраны различают 429 (бюджет) и прочие. */
 export class ApiError extends Error {
@@ -34,6 +41,8 @@ export const api = {
     request<SearchResponse>('/search', { method: 'POST', body: JSON.stringify({ query }) }),
   map: () => request<MapResponse>('/map'),
   echo: () => request<EchoResponse>('/echo'),
+  /** Доступ + ёмкость базы — для индикатора «база used/limit» и CTA на апгрейд. */
+  entitlement: () => request<EntitlementResponse>('/entitlement'),
   /** Семантические соседи записи (item-kNN) — блок «Рядом» в карточке. */
   similar: (id: string) => request<SimilarResponse>(`/items/${id}/similar`),
 

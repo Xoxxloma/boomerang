@@ -1,6 +1,7 @@
 /**
- * Тонкая обёртка над Telegram WebApp SDK. Даёт initData (подпись для авторизации), тему (light/dark),
- * haptics. В обычном браузере (dev без Telegram) деградирует мягко: тёмная тема, пустой initData
+ * Тонкая обёртка над Telegram WebApp SDK. Даёт initData (подпись для авторизации), haptics.
+ * Тема приложения — всегда тёмная (космос несёт бренд), color_scheme клиента игнорируем.
+ * В обычном браузере (dev без Telegram) деградирует мягко: пустой initData
  * (API ответит 401 — это ожидаемо, UI всё равно рендерится на мок-данных).
  */
 
@@ -38,23 +39,19 @@ declare global {
 const tg: TgWebApp | undefined = window.Telegram?.WebApp;
 
 /**
- * Hex-эквиваленты нашего --bg по теме — Telegram setBackgroundColor не парсит oklch, нужен RGB hex.
- * dark = oklch(0.16 0.025 275) (глубокий индиго), light = чистый белый. Держать в синхроне с tokens.css.
+ * Hex-эквивалент нашего --bg — Telegram setBackgroundColor не парсит oklch, нужен RGB hex.
+ * --bg = oklch(0.16 0.025 275) (глубокий индиго). Держать в синхроне с tokens.css.
  */
-const BG_HEX: Record<'light' | 'dark', `#${string}`> = {
-  dark: '#15151d',
-  light: '#ffffff',
-};
+const BG_DARK = '#15151d';
 
-/** Применить тему Telegram к документу: атрибут [data-theme] переключает наш набор токенов. */
+/** Применить единую тёмную тему: атрибут [data-theme] включает наш набор токенов. */
 function applyTheme(): void {
-  const scheme = tg?.colorScheme ?? 'dark';
-  document.documentElement.dataset.theme = scheme;
+  document.documentElement.dataset.theme = 'dark';
   // Синхронизируем хром Telegram (шапка/фон) с нашим --bg — чтобы рамка приложения не «спорила» с UI.
   if (tg) {
     try {
-      tg.setBackgroundColor(BG_HEX[scheme]);
-      tg.setHeaderColor(BG_HEX[scheme]);
+      tg.setBackgroundColor(BG_DARK);
+      tg.setHeaderColor(BG_DARK);
     } catch {
       /* старые клиенты не поддерживают произвольный цвет — не критично */
     }
@@ -69,7 +66,6 @@ export function initApp(): void {
     // Свайп вниз должен закрывать лист, а не сворачивать апп — забираем жест себе. Полноэкранное
     // приложение и так закрывается через «×». Feature-detect: на клиентах < Bot API 7.7 — no-op.
     tg.disableVerticalSwipes?.();
-    tg.onEvent('themeChanged', applyTheme);
   }
   applyTheme();
 }

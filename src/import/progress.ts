@@ -52,7 +52,7 @@ export function finalText(res: BatchResult): string {
   }
 
   if (res.existingDupeCount > 0) {
-    blocks.push(dupeSection('Эти посты уже были в Бумеранге, не добавил повторно:', res.existingDupes, res.existingDupeCount));
+    blocks.push(dupeSection('Эти посты уже были в Boomerang, не добавил повторно:', res.existingDupes, res.existingDupeCount));
   }
   if (res.inBatchDupeCount > 0) {
     blocks.push(dupeSection('Убрал повторы внутри заливки:', res.inBatchDupes, res.inBatchDupeCount));
@@ -61,6 +61,15 @@ export function finalText(res: BatchResult): string {
   // Остаток пропуска сверх дублей — мелочь без текста (короткие заметки/эмодзи).
   const noise = res.skipped - res.existingDupeCount - res.inBatchDupeCount;
   if (noise > 0) blocks.push(`Пропустил мелочь без текста: ${noise}.`);
+
+  // Не влезло в потолок бесплатного тарифа: честно сообщаем + CTA на Pro (записи не потеряны — дольёшь
+  // после апгрейда). Единственная платная стена — ёмкость базы.
+  if (res.cappedOut && res.cappedOut > 0) {
+    blocks.push(
+      `🗄 Ещё ${res.cappedOut} не поместилось — хранилище заполнено. Оформи Boomerang Pro (безлимит) ` +
+        'и долей остаток: /premium',
+    );
+  }
 
   blocks.push('Загляни в /folders или спроси — например «что я сохранял про переезд» (кнопка 🔍 Найти или /find).');
   return blocks.join('\n\n');

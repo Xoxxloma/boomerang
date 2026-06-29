@@ -31,7 +31,7 @@ export async function bufferAlbumPart(api: Api, msg: Message): Promise<void> {
     const userId = msg.from?.id;
     const alreadyPosted = userId != null && (await groupsAlreadyPosted(userId, [gid])).has(gid);
     if (!alreadyPosted) {
-      const ack = await api.sendMessage(msg.chat.id, 'Принял ✅', {
+      const ack = await api.sendMessage(msg.chat.id, '✅ Принял', {
         reply_parameters: { message_id: msg.message_id },
       });
       await db

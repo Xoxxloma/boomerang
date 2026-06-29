@@ -13,3 +13,8 @@ const queryClient = postgres(env.DATABASE_URL, {
 
 export const db = drizzle(queryClient, { schema });
 export { queryClient };
+
+/** Транзакционный executor drizzle (тот же query-API, что и db) — параметр для callback `db.transaction`. */
+export type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+/** db или активная транзакция — чтобы billing-хелперы работали и снаружи, и внутри одной транзакции. */
+export type Executor = typeof db | Tx;

@@ -43,7 +43,7 @@ export function SearchScreen({ onOpenItem }: { onOpenItem: (it: ItemDTO) => void
 
   return (
     <div className="screen screen-pad-top">
-      <h1 className="display">Спросить архив</h1>
+      <h1 className="display">Поиск</h1>
       <p className="lede">Связный ответ со ссылками на твои источники — не список, а сведённая мысль.</p>
 
       <form

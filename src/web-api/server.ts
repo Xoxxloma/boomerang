@@ -8,6 +8,8 @@ import { mapRoutes } from './routes/map.js';
 import { echoRoutes } from './routes/echo.js';
 import { remindersRoutes } from './routes/reminders.js';
 import { itemsRoutes } from './routes/items.js';
+import { entitlementRoutes } from './routes/entitlement.js';
+import { notifyAdmins } from '../bot/alerts.js';
 
 /** Переменные контекста после telegramAuth — общий тип для всех роутов. */
 export type AuthVars = { userId: number; tgUser: InitDataUser };
@@ -24,6 +26,7 @@ function buildApp(): Hono {
   api.route('/', echoRoutes);
   api.route('/', remindersRoutes);
   api.route('/', itemsRoutes);
+  api.route('/', entitlementRoutes);
 
   const app = new Hono();
   app.get('/healthz', (c) => c.text('ok')); // для пробы Caddy/uptime
@@ -32,6 +35,22 @@ function buildApp(): Hono {
   // Статика фронта + SPA-фолбэк: неизвестный путь (клиентский роут) отдаёт index.html.
   app.use('/*', serveStatic({ root: WEB_ROOT }));
   app.get('*', serveStatic({ path: `${WEB_ROOT}/index.html` }));
+
+  // Глобальный перехват необработанных исключений роутов (сбой БД, неожиданная ошибка в synthesize и
+  // т.п.). Без него Hono отдаёт текстовый 500 БЕЗ логирования — админы слепы, а фронт (api.ts парсит
+  // тело как JSON) теряет контракт ошибки. Штатные ответы (429-бюджет, 400/404) возвращаются роутами
+  // через c.json и сюда не попадают. notifyAdmins троттлит по ключу (путь+класс ошибки) — без флуда.
+  app.onError((err, c) => {
+    console.error('web-api error:', c.req.method, c.req.path, err);
+    const name = err instanceof Error ? err.name : typeof err;
+    const detail = err instanceof Error ? err.message : String(err);
+    void notifyAdmins(
+      `web-api:${c.req.path}:${name}`,
+      `❌ web-api ${c.req.method} ${c.req.path}: ${name}: ${detail.slice(0, 300)}`,
+    );
+    return c.json({ error: 'internal' }, 500);
+  });
+
   return app;
 }
 

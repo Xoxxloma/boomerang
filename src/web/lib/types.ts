@@ -47,6 +47,14 @@ export interface SimilarResponse {
   similar: ItemDTO[];
 }
 
+/** Доступ + ёмкость базы (зеркало web-api/routes/entitlement). limit=null — безлимит (Pro). */
+export interface EntitlementResponse {
+  tier: 'free' | 'pro';
+  activeUntil: string | null;
+  source: 'trial' | 'pass' | null;
+  capacity: { used: number; limit: number | null };
+}
+
 export type EchoKind = 'on_this_day' | 'resonance';
 export interface EchoCard {
   kind: EchoKind;
